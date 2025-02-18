@@ -1,6 +1,6 @@
 # AntTerrEnv
 
-AntTerrEnv: 1 km rasters for modelling biodiversity and human impact in terrestrial Antarctica
+## AntTerrEnv: 1 km rasters for modelling biodiversity and human impact in terrestrial Antarctica
 
 ## Project overview
 
