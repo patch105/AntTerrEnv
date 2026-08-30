@@ -1,0 +1,297 @@
+
+## Packages I need to run ISDM simulations
+
+library(spatstat)
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(viridis)
+library(terra)
+library(purrr)
+library(readr)
+
+
+library(NLMR)
+library(landscapetools)
+library(RandomFields) # See below for download from archived files.
+
+
+
+
+# Install RandomFields package (required for covariate simulation). No longer on CRAN. 
+# Downloaded archived RandomFields utils and RandomFields with code below, accessed from: https://cran.r-project.org/src/contrib/Archive/RandomFieldsUtils/ and https://cran.r-project.org/src/contrib/Archive/RandomFields/ 
+
+# install.packages("C:/Users/n11222026/OneDrive - Queensland University of Technology/Code/Downloaded_packages/RandomFields_3.3.14.tar.gz", repos = NULL, type="source")
+
+
+
+# # Install flexsdm
+# remotes::install_github("sjevelazco/flexsdm")
+library(flexsdm)
+
+# library(devtools)
+# devtools::install_github( repo="Scott-Foster/RISDM", build_vignettes=FALSE) # Had to do force = T when I wanted to re-load
+
+library(Metrics)
+library(scoringutils)
+
+library(ggpubr)
+
+
+
+#########################################
+qsub -I -S /bin/bash -l walltime=03:00:00 -l select=1:ncpus=1:mem=4gb:cputype=6140
+
+module load mamba
+#conda create --name RLibsV4.4.1 r-base=4.4.1 
+conda activate RLibsV4.4.1
+conda activate RLibs_V4.4.1D
+
+# Install all the ones I can in conda
+# I ran this and it did work!!
+conda install r-ggpubr r-viridis r-terra r-purrr r-readr r-Metrics r-devtools r-remotes r-landscapetools
+
+# Load R
+R
+lib_loc <- paste(getwd(),"/r_lib",sep="")
+
+# Install tricky ones
+
+# Tried to install fmesher but failed because missing 'units' package, which I couldn't download, I went to conda install to try installing units
+conda install r-units
+
+# Then retried fmesher 
+install.packages('fmesher', repos = "https://cloud.r-project.org",lib=lib_loc, dep = TRUE)
+
+# Tried NLMR but didn't work, so 
+remotes::install_github("ropensci/NLMR",lib=lib_loc)
+
+
+install.packages("INLA",repos=c(getOption("https://cloud.r-project.org"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE,lib=lib_loc)
+
+install.packages("scoringutils", repos = "https://cloud.r-project.org",lib=lib_loc)
+
+install.packages("spatstat", repos = "https://cloud.r-project.org",lib=lib_loc)
+
+install.packages('RandomFields', repos='https://predictiveecology.r-universe.dev', type = 'source',dep = TRUE, lib = lib_loc)
+
+remotes::install_github("sjevelazco/flexsdm")
+
+devtools::install_github( repo="Scott-Foster/RISDM", build_vignettes=FALSE)
+
+library(remotes, lib.loc=lib_loc)
+library(NLMR, lib.loc=lib_loc)
+library(INLA, lib.loc=lib_loc)
+library(RISDM, lib.loc=lib_loc)
+library(flexsdm, lib.loc=lib_loc)
+library(RandomFields, lib.loc=lib_loc)
+
+install.packages('terra', repos = "https://cloud.r-project.org",lib=lib_loc, dep = TRUE)
+
+
+### TO DO ON THE VIRTUAL MACHINE ###
+install.packages("tidyverse", dependencies = T)
+install.packages("viridis", dependencies= T)
+install.packages("terra", dependencies = T)
+install.packages("readr", dependencies = T)
+install.packages("Metrics", dependencies = T)
+install.packages("devtools", dependencies = T)
+install.packages("remotes", dependencies = T)
+install.packages("devtools", dependencies = T)
+install.packages("sf", dependencies = T)
+install.packages("fmesher", dependencies = T)
+install.packages("scoringutils", dependencies = T)
+install.packages("spatstat", dependencies = T)
+install.packages("ggpubr", dependencies = T)
+install.packages("landscapetools", dependencies = T)
+
+
+
+
+# Ones from GitHub (had to download Rtools first)
+remotes::install_github("ropensci/NLMR")
+
+install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
+remotes::install_github("Scott-Foster/RISDM",dep = TRUE) 
+remotes::install_github("sjevelazco/flexsdm",dep = TRUE) 
+install.packages('RandomFields', repos='https://predictiveecology.r-universe.dev', type = 'source',dep = TRUE)
+
+
+
+##################### NOTES FROM VICKI 18 SEP 2024 ##########################################
+
+qsub -I -S /bin/bash -l walltime=04:00:00
+
+conda create --name RLibs_V4.4.1
+conda activate RLibs_V4.4.1
+
+mamba install conda-forge::r-base
+mamba install -c conda-forge udunits2 gdal geos proj
+mamba install r-ggpubr
+mamba install r-viridis
+mamba install r-terra
+mamba install r-devtools
+mamba install r-spatstat
+mamba install conda-forge::r-metrics
+mamba install conda-forge::openssl
+mamba install r-ks
+mamba install r-geoR
+mamba install r-fpc
+mamba install r-DescTools
+mamba install r-mgcv
+mamba install r-spdep
+mamba install r-here
+
+install.packages("bayesmeta", dependencies = T, lib = lib_loc)
+
+mkdir r_libs
+
+### These are installed once you have opened R
+R
+
+lib_loc <- paste(getwd(),"/r_lib",sep="")
+
+options(repos=c(
+    inlabruorg = "https://inlabru-org.r-universe.dev",
+    INLA = "https://inla.r-inla-download.org/R/testing",
+    CRAN = "https://cran.rstudio.com")
+)
+
+install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
+
+
+install.packages("landscapetools", repos="https://cloud.r-project.org",lib=lib_loc, dependencies=TRUE)
+install.packages('RandomFields', repos='https://predictiveecology.r-universe.dev', type = 'source',dep = TRUE, lib = lib_loc)
+remotes::install_github("ropensci/NLMR",lib=lib_loc)
+remotes::install_github("sjevelazco/flexsdm",lib=lib_loc)
+remotes::install_github("epiforecasts/scoringutils", dependencies = TRUE,lib=lib_loc)
+devtools::install_github( repo="Scott-Foster/RISDM", build_vignettes=FALSE,lib=lib_loc)
+install.packages("ENMTools", repos="https://cloud.r-project.org",lib=lib_loc, dependencies=TRUE)
+
+install.packages("spdep", repos="https://cloud.r-project.org",lib=lib_loc, dependencies=TRUE)
+
+# Updates May 2025
+remotes::install_github("rvalavi/myspatial", dependencies = TRUE,lib=lib_loc)
+devtools::install_github("marlonecobos/kuenm", dependencies = TRUE,lib=lib_loc)
+remotes::install_github('meeliskull/prg/R_package/prg', dependencies = TRUE,lib=lib_loc)
+install.packages("usdm", repos="https://cloud.r-project.org", lib=lib_loc, dependencies = T)
+
+conda install -c conda-forge r-rjava
+find ~/.conda/envs/RLibs_V4.4.1D -name libjvm.so
+export LD_LIBRARY_PATH=/home/n11222026/.conda/envs/RLibs_V4.4.1D/jre/lib/amd64/server:$LD_LIBRARY_PATH
+
+
+mamba install r-predicts
+mamba install r-blockCV
+mamba install r-precrec
+mamba install r-arrow
+remove.packages("sf", lib = lib_loc)
+mamba install r-sf
+remove.packages("rJava")
+mamba install r-rJava
+
+
+
+library(remotes) #,lib.loc=lib_loc)
+library(spatstat)
+library(ggplot2) #,lib.loc=lib_loc)
+library(units) #,lib.loc=lib_loc)
+library(ggpubr) #,lib.loc=lib_loc)
+library(dplyr)
+library(viridis)
+library(terra)
+library(purrr)
+library(readr)
+library(Metrics) #,lib.loc=lib_loc)
+library(devtools)
+library(INLA)
+library(landscapetools,lib.loc=lib_loc)
+library(RISDM,lib.loc=lib_loc)
+library(sf)
+library(fmesher)
+library(RandomFields,lib.loc=lib_loc)
+library(NLMR,lib.loc=lib_loc)
+library(scoringutils,lib.loc=lib_loc)
+library(ks)
+library(geoR)
+library(fpc)
+library(bayesmeta, lib.loc = lib_loc)
+library(here)
+
+conda env create -n RLibs_V4.4.1C --file RLIBS_V4.4.1.yml
+
+RLibs_V4.4.1C
+
+
+install.packages("ks", lib=lib_loc, dependencies = T)
+
+########## VICKI NOTES 20/09/2024 ##############
+qsub -I -S /bin/bash -l walltime=04:00:00
+qsub -I -S /bin/bash -l walltime=03:00:00 -l select=1:ncpus=8:mem=80gb
+
+# to move to the test folder
+cd ISDM 
+ls # shows that it's the right folder
+
+conda activate RLibs_V4.4.1D
+R
+lib_loc <- paste(getwd(),"/r_lib",sep="")
+
+library(remotes)
+library(spatstat)
+library(ggplot2)
+library(units,lib.loc=lib_loc)
+library(ggpubr)
+library(dplyr)
+library(viridis)
+library(terra)
+library(purrr)
+library(readr)
+library(Metrics)
+library(devtools)
+library(INLA,lib.loc=lib_loc)
+library(landscapetools,lib.loc=lib_loc)
+library(RISDM,lib.loc=lib_loc)
+library(sf,lib.loc=lib_loc)
+library(fmesher,lib.loc=lib_loc)
+library(RandomFields,lib.loc=lib_loc)
+library(NLMR,lib.loc=lib_loc)
+library(scoringutils,lib.loc=lib_loc)
+library(flexsdm, lib.loc = lib_loc)
+
+## HAD TO DOWNLOAD GGPUBR IN AN INTERACTIVE SESSION SEPARATELY - just kidding I didn't
+# The problem was actually the R module load which wasn't necessary
+install.packages('ggpubr', repos="https://cloud.r-project.org", lib = lib_loc, dependencies = TRUE)
+install.packages('rstatix', repos="https://cloud.r-project.org", lib = lib_loc, dependencies = TRUE)
+install.packages('car', repos="https://cloud.r-project.org", lib = lib_loc, dependencies = TRUE)
+install.packages('DescTools', repos="https://cloud.r-project.org", lib = lib_loc, dependencies = TRUE)
+install.packages('precrec', repos="https://cloud.r-project.org", lib = lib_loc, dependencies = TRUE)
+
+# CHeck if I have
+install.packages('ecospat', repos="https://cloud.r-project.org", lib = lib_loc, dependencies = TRUE)
+install.packages('kuenm', repos="https://cloud.r-project.org", lib = lib_loc, dependencies = TRUE)
+install.packages('prg', repos="https://cloud.r-project.org", lib = lib_loc, dependencies = TRUE)
+install.packages('automap', repos="https://cloud.r-project.org", lib = lib_loc, dependencies = TRUE)
+
+### If I want to check the status of a job
+
+pbsnodeinfo # will tell you what the nodes are doing
+
+# Monday morning is a good time to submit jobs
+qstat -f xxx.pbs # for full info
+qstat -fx cccc.pbs # for finished job
+
+# To look at how my current jobs are going
+qstat -u n11222026
+
+#Look at my old jobs
+qstat -u n11222026 -x 
+
+
+# May 26th
+install.packages("gdalraster", repos="https://cloud.r-project.org",lib=lib_loc, dependencies=TRUE)
+library(gdalraster, lib.loc = lib_loc)
+
+install.packages("vapour", repos="https://cloud.r-project.org",lib=lib_loc, dependencies=TRUE)
+
+remotes::install_github("hypertidy/vapour", dependencies = TRUE,lib=lib_loc)
