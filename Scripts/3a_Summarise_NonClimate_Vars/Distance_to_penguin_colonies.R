@@ -244,7 +244,7 @@ rookeriesBP <- rookeries %>%
 # Calculate how far these rookeries are from ice-free land (domain)
 
 # Load the ice-free union layer but at a 100m raster resolution
-domain100m <- rast(here("Data/Environmental_predictors/ice_free_union_reproj_100m.tif"))
+domain100m <- rast(here("Data/ice_free_domain_100m.tif"))
 
 # Set domain values
 # domain100m <- ifel(not.na(domain100m), 1, NA)
@@ -255,7 +255,7 @@ domain100m <- rast(here("Data/Environmental_predictors/ice_free_union_reproj_100
 
 # print("dist_raster")
 
-dist_raster <- rast(here("Data/Environmental_predictors/Dist_to_Icefree_100m.tif"))
+dist_raster <- rast(here("Data/Dist_to_Icefree_100m.tif"))
 
 
 
