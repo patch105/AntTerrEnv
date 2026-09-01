@@ -203,7 +203,7 @@ read_file_meta <- function(path) {
       on.exit(ncdf4::nc_close(nc), add = TRUE)
       candidates <- names(nc$var)
       candidates <- candidates[!grepl(
-        "_bnds$|bounds|^lat$|^lon$|rotated|crs|height|^time$",
+        "_bnds$|bounds|^lat(itude)?$|^lon(gitude)?$|rotated|crs|height|^time$",
         candidates, ignore.case = TRUE
       )]
       if (length(candidates) >= 1) {

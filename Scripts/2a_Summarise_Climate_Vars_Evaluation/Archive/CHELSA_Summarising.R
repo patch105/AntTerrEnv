@@ -9,11 +9,11 @@ library(here)
 
 # inpath <- file.path("Z://AntarcticFutureHabitat/Data/CHELSA")
 # inpath <- here("Data/CHELSA")
-inpath <- "/mnt/hpccs01/home/n11222026/AntarcticFutureHabitat/Data/CHELSA"
+inpath <- "/mnt/hpccs01/home/patterc2/n11222026/AntarcticFutureHabitat/Data/CHELSA"
 
 # Set outpath -------------------------------------------------------------
 
-outpath <- "/mnt/hpccs01/home/n11222026/AntarcticFutureHabitat/Data/CHELSA/Validation"
+outpath <- "/mnt/hpccs01/home/patterc2/n11222026/AntarcticFutureHabitat/Data/CHELSA/comparison"
 
 # Load ice-free domain ----------------------------------------------------
 
