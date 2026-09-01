@@ -36,7 +36,7 @@ job_index    <- as.integer(args[1])
 
 variables <- list("temp", "total_DD_minus5", "total_DD_0", "wind", "sea_ice",
                   "total_precip", "total_summer_precip", "mean_precip",
-                  "mean_summer_precip", "solar_rad", "mean_melt", "total_melt",
+                  "mean_summer_precip", "solar_rad_down", "solar_rad_net","mean_melt", "total_melt",
                   "mean_snow", "mean_hurs", "vpd", "temp_min", "temp_max")
 # temp_minmax added at the END (not alphabetically/logically placed) so it
 # doesn't shift the job_index of every variable after it in job_table.
@@ -544,8 +544,7 @@ if (variable == "mean_precip") {
     }
     annual <- annual_mean_from_monthly(monthly)
     save_raster(annual, sprintf("Mean_Annual_Precipitation_%s_%s.tif", period_name, p$range))
-  }
-}
+  }}
 
 # ---- 5d. MEAN SUMMER (DJF) PRECIPITATION (pr, mm/day) ----------------------------
 # Now the mean of the 3 relevant monthly climatologies (Dec, Jan, Feb), no
@@ -570,35 +569,67 @@ if (variable == "mean_summer_precip") {
   }
 }
 
-# ---- 6. SOLAR RADIATION (net SW = rsds - rsus, W m-2, no conversion) ------------
-if (variable == "solar_rad") {
+# ---- 6a. SOLAR RADIATION NET (net SW = rsds - rsus, W m-2, no conversion) ------------
+if (variable == "solar_rad_net") {
   
   for (period_name in names(periods)) {
     p <- periods[[period_name]]
-    message("-- solar_rad: ", period_name)
+    message("-- solar_rad_net: ", period_name)
     
     rsds <- load_variable_series(model_dir, "rsds", p$scenario)
     rsus <- load_variable_series(model_dir, "rsus", p$scenario)
     
-    if (!identical(rsds$dates, rsus$dates)) {
-      stop("rsds and rsus dates don't line up for ", model, " / ", p$scenario,
-           " -- check Script 1's date-gap report for these two variables.")
-    }
-    swnet_r <- rsds$r - rsus$r
+    # rsus has a ~15-year gap (2060-2075) that rsds doesn't have. We don't
+    # care about that gap for the climatology (missing years are simply
+    # skipped by climatological_monthly_mean), but we do need the two
+    # rasters to be subtracted date-for-date. So instead of requiring the
+    # full series to line up, restrict both to the dates they have in
+    # common before differencing.
+    common_dates <- as.Date(intersect(rsds$dates, rsus$dates), origin = "1970-01-01")
     
-    monthly <- climatological_monthly_means_all(swnet_r, rsds$dates, p$years)
+    if (length(common_dates) == 0) {
+      stop("rsds and rsus share no common dates for ", model, " / ", p$scenario)
+    }
+    
+    rsds_r <- rsds$r[[match(common_dates, rsds$dates)]]
+    rsus_r <- rsus$r[[match(common_dates, rsus$dates)]]
+    
+    swnet_r <- rsds_r - rsus_r
+    
+    monthly <- climatological_monthly_means_all(swnet_r, common_dates, p$years)
     for (m in 1:12) {
-      save_raster(monthly[[m]], sprintf("Climatological_Monthly_Mean_Solar_Radiation_%s_%s_%s.tif",
+      save_raster(monthly[[m]], sprintf("Climatological_Monthly_Mean_Net_Solar_Radiation_%s_%s_%s.tif",
                                         month.name[m], period_name, p$range))
     }
     annual <- annual_mean_from_monthly(monthly)
-    save_raster(annual, sprintf("Mean_Annual_Solar_Radiation_%s_%s.tif", period_name, p$range))
+    save_raster(annual, sprintf("Mean_Annual_Net_Solar_Radiation_%s_%s.tif", period_name, p$range))
   }
 }
 
+
+# ---- 6b. SOLAR RADIATION DOWNWELLING (just rsds, W m-2, no conversion) ------------
+
+if (variable == "solar_rad_down") {
+  
+  for (period_name in names(periods)) {
+    p <- periods[[period_name]]
+    message("-- solar_rad_down: ", period_name)
+    
+    rsds <- load_variable_series(model_dir, "rsds", p$scenario)
+    
+    monthly <- climatological_monthly_means_all(rsds$r, rsds$dates, p$years)
+    for (m in 1:12) {
+      save_raster(monthly[[m]], sprintf("Climatological_Monthly_Mean_Downwelling_Solar_Radiation_%s_%s_%s.tif",
+                                        month.name[m], period_name, p$range))
+    }
+    annual <- annual_mean_from_monthly(monthly)
+    save_raster(annual, sprintf("Mean_Annual_Downwelling_Solar_Radiation_%s_%s.tif", period_name, p$range))
+  }
+}  
+
+  
 # ---- 7. MEAN & TOTAL SNOW MELT (snm, converted to mm like precipitation) -------
 # Mass of ice/snow melted at the surface per second (magnitude of melt)
-if (variable == "mean_melt") {
   
   for (period_name in names(periods)) {
     p <- periods[[period_name]]
