@@ -155,9 +155,6 @@ if (SKIP_EXISTING && all(file.exists(expected_outputs))) {
 
 # ---- 5. Project, resample, mask, save --------------------------------------------
 
-# Load the template
-domain <- rast(here("Data/Ant_extent_grid_10km.tif"))
-
 r <- rast(input_path)
 
 if (is.na(crs(r)) || crs(r) == "") {
@@ -198,8 +195,8 @@ if (is.na(crs(r)) || crs(r) == "") {
 }
 
 # Step 1: Make a domain for target CRS with matching resolution
-target_grid <- rast(extent = ext(domain), crs = crs(domain),
-                    resolution = res(domain)) # 10 km domain
+target_grid <- rast(extent = ext(coast_domain), crs = crs(coast_domain),
+                    resolution = res(coast_domain)) # 10 km domain
 
 # Sanity check: extent must be a clean integer multiple of the resolution,
 # otherwise project()/rast() will silently produce a grid that doesn't

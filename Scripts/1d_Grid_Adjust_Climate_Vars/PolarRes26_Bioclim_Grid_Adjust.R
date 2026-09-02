@@ -1,10 +1,13 @@
 # ==============================================================================
 # PolarRes26 -- STEP 3: REPROJECT, RESAMPLE, AND MASK EVERY CLIMATOLOGY OUTPUT
 # ==============================================================================
-# Takes every .tif Script 2 wrote (for every model) and produces two masked
+# Takes every .tif Script 2 wrote (for every model) and produces masked
 # versions of each, on a common grid:
-#   - <name>_COASTLINE.tif -- masked to the coastline domain
-#   - <name>_ICEFREE.tif   -- masked to the ice-free domain
+#   - <name>_COASTLINE.tif       -- masked to the coastline domain
+#   - <name>_ICEFREE.tif         -- masked to the (historical/mid) ice-free domain
+#   - <name>_ICEFREE_FUTURE.tif  -- masked to the future ice-free domain
+#                                    (FUTURE-period files only, saved as a
+#                                    separate, additional output)
 #
 # Deliberately does NOT hard-code the list of variables/periods/products --
 # it just finds every .tif file Script 2 actually produced, for every model,
@@ -35,8 +38,19 @@ models <- c("HCLIM_CESM2", "HCLIM_MPI_ESM1", "HCLIM_ERA5", "RACMO_CESM2", "RACMO
 input_base  <- here("Data/Environmental_predictors/PolarRes26_Bioclim")
 output_base <- here("Data/Environmental_predictors/PolarRes26_Bioclim/Regridded")
 
-coast_domain    <- rast(here("Data/PolarRes26/coast_domain.tif"))
-ice_free_domain <- rast(here("Data/PolarRes26/ice_free_domain.tif"))
+coast_domain           <- rast(here("Data/PolarRes26/coast_domain.tif"))
+ice_free_domain        <- rast(here("Data/PolarRes26/ice_free_domain.tif"))
+ice_free_future_domain <- rast(here("Data/PolarRes26/ice_free_future_domain.tif"))
+
+# Template file used to recover a CRS for HCLIM inputs that come out of
+# Script 1/2 with an empty/missing CRS (a known HCLIM quirk). Only ever
+# used as a source of CRS metadata -- never as data -- and only after the
+# extent of the broken input has been checked against this template's
+# extent (see section 5).
+hclim_crs_template_path <- here(
+  "Data/PolarRes26/HCLIM_CESM2/historical/r11i1p1f1/HCLIM43-ALADIN/v1-r1/day/hurs/v20251130/",
+  "hurs_ANT-12_CESM2_historical_r11i1p1f1_HCLIMcom-DMI_HCLIM43-ALADIN_v1-r1_day_19860101-19901231.nc"
+)
 
 
 # ---- 2. Build the job table: every .tif Script 2 produced, across every model --
@@ -76,25 +90,59 @@ out_dir <- file.path(output_base, model)
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
 stem <- tools::file_path_sans_ext(filename)
-coastline_path <- file.path(out_dir, paste0(stem, "_COASTLINE.tif"))
-icefree_path   <- file.path(out_dir, paste0(stem, "_ICEFREE.tif"))
+coastline_path     <- file.path(out_dir, paste0(stem, "_COASTLINE.tif"))
+icefree_path       <- file.path(out_dir, paste0(stem, "_ICEFREE.tif"))
+icefree_futurepath <- file.path(out_dir, paste0(stem, "_ICEFREE_FUTURE.tif"))
 
-# ---- 5. Project, resample, mask, save --------------------------------------------
+# Period is read off the filename. FUTURE-period files additionally get an
+# ICEFREE_FUTURE output; historical/mid files only get the two generic
+# COASTLINE/ICEFREE outputs.
+is_future <- grepl("_FUTURE_", filename, fixed = TRUE)
+
+# ---- 5. Project, mask, save --------------------------------------------------
 
 r <- rast(input_path)
 
-# For now: Hardcode the resolution to 11km
-reso <- 11000
-
 if (is.na(crs(r)) || crs(r) == "") {
-  stop("Input raster has no CRS: ", input_path,
-       " -- reprojecting without a source CRS would silently produce garbage.",
-       " Check this file (and Script 1/2's terra version, if this is a RACMO file).")
+  
+  # Known HCLIM quirk: some HCLIM outputs come out of Script 1/2 with no
+  # CRS attached, even though their grid/extent is fine. For HCLIM only,
+  # recover the CRS from a known-good HCLIM template file -- but only after
+  # confirming the extents actually line up, so we never silently stamp a
+  # wrong CRS onto a raster that doesn't actually match the template grid.
+  if (grepl("^HCLIM", model)) {
+    
+    hclim_template <- rast(hclim_crs_template_path)
+    
+    extents_match <- isTRUE(all.equal(
+      as.vector(ext(r)), as.vector(ext(hclim_template)),
+      tolerance = 1e-6
+    ))
+    
+    if (!extents_match) {
+      stop("Input raster has no CRS and its extent does not match the HCLIM ",
+           "CRS template (", hclim_crs_template_path, ") -- refusing to guess ",
+           "a CRS for a grid that doesn't line up. Input: ", input_path,
+           "\n  input extent:    ", paste(round(as.vector(ext(r)), 4), collapse = ", "),
+           "\n  template extent: ", paste(round(as.vector(ext(hclim_template)), 4), collapse = ", "))
+    }
+    
+    crs(r) <- crs(hclim_template)
+    message("  input had no CRS -- extent matched the HCLIM template, so CRS was ",
+            "copied from it: ", input_path)
+    
+  } else {
+    # RACMO / MetUM (or anything else): an empty CRS here is not a known,
+    # safe-to-patch quirk -- treat it as the hard error it always has been.
+    stop("Input raster has no CRS: ", input_path,
+         " -- reprojecting without a source CRS would silently produce garbage.",
+         " Check this file (and Script 1/2's terra version, if this is a RACMO file).")
+  }
 }
 
 # Step 1: Make a domain for target CRS with matching resolution
 target_grid <- rast(extent = ext(coast_domain), crs = crs(coast_domain),
-                    resolution = reso)
+                    resolution = res(coast_domain))
 
 # Sanity check: extent must be a clean integer multiple of the resolution,
 # otherwise project()/rast() will silently produce a grid that doesn't
@@ -110,10 +158,6 @@ stopifnot(
 # Step 2: Reproject into the domain's CRS with bilinear interpolation
 r <- project(r, target_grid, method = "bilinear")
 
-# Step 3: Resample to 1km domain grid (already in the right CRS & extent, so
-# "near" here is just chopping up 10km to 1km grids
-r <- resample(r, coast_domain, method = "near")
-
 # Mask to the coastline domain
 r_coast <- mask(r, coast_domain, maskvalue = NA)
 writeRaster(r_coast, coastline_path, overwrite = TRUE)
@@ -123,5 +167,12 @@ message("  wrote ", coastline_path)
 r_icefree <- mask(r, ice_free_domain, maskvalue = NA)
 writeRaster(r_icefree, icefree_path, overwrite = TRUE)
 message("  wrote ", icefree_path)
+
+# Mask to the future ice-free domain (FUTURE-period files only)
+if (is_future) {
+  r_icefree_future <- mask(r, ice_free_future_domain, maskvalue = NA)
+  writeRaster(r_icefree_future, icefree_futurepath, overwrite = TRUE)
+  message("  wrote ", icefree_futurepath)
+}
 
 message("Done: ", model, " / ", filename)
