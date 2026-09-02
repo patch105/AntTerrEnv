@@ -17,8 +17,8 @@ Ant_extent_grid_1km <- rast(Ant_extent, res = 1000, vals = 1)
 Ant_extent_grid_10km <- rast(Ant_extent, res = 10000, vals = 1)
 Ant_extent_grid_100m <- rast(Ant_extent, res = 100, vals = 1)
 
-writeRaster(Ant_extent_grid_1km, here("Data/Ant_extent_grid_1km.tif"), overwrite =T)
-writeRaster(Ant_extent_grid_10km, here("Data/Ant_extent_grid_10km.tif"), overwrite = T)
+writeRaster(Ant_extent_grid_1km, here("Data/Ant_extent_grid.tif"))
+writeRaster(Ant_extent_grid_10km, here("Data/Ant_extent_grid_10km.tif"))
 
 # Load the two domains for AntTerrEnv variables:
 
@@ -60,7 +60,7 @@ writeRaster(ice_free_domain_100m, here("Data/ice_free_domain_100m.tif"), overwri
 # Load the future ice-free layer as a shapefile
 ice_free_future <- vect(here("Data/AAS_4297_Future_Ice-free_Layers/AAS_4297_Ice_Free_Shapefiles/PS_RCP45_Best_Future_IceFree.shp"))
 
-ice_free_future_domain <- mask(Ant_extent_grid_10km, ice_free_future, updatevalue = NA, touches = T)
+ice_free_future_domain <- mask(Ant_extent_grid, ice_free_future, updatevalue = NA, touches = T)
 
 names(ice_free_future_domain) <- "ice_free_future_domain" 
 
