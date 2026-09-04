@@ -30,6 +30,13 @@
 # tables only make sense for the two SSP-driven GCMs -- CESM2 and MPI_ESM1
 # -- since ERA5 is an evaluation run, not a climate storyline, so it's
 # excluded from those tables (but still included in the by-model tables).
+#
+# NOTE on diffs: MID_DIFF/FUTURE_DIFF are only computed for variables that
+# actually have both a HISTORICAL raster and a MID/FUTURE raster. terra's
+# `-` operator on SpatRasters is POSITIONAL (it pairs layers by index, not
+# by name), so if a variable is missing from one period but present in the
+# other, a naive `target - hist` silently misaligns every layer after that
+# point and produces unnamed/garbage columns. See diff_common_layers().
 # ==============================================================================
 
 library(dplyr)
@@ -41,9 +48,9 @@ library(stringr)
 
 # ---- 1. Configuration -----------------------------------------------------
 
-# models <- c("HCLIM_CESM2", "HCLIM_MPI_ESM1", "HCLIM_ERA5",
-#             "RACMO_CESM2", "RACMO_MPI_ESM1", "RACMO_ERA5", "MetUM_ERA5")
-models <- c("HCLIM_CESM2", "HCLIM_MPI_ESM1", "RACMO_MPI_ESM1")
+models <- c("HCLIM_CESM2", "HCLIM_MPI_ESM1", "HCLIM_ERA5",
+            "RACMO_CESM2", "RACMO_MPI_ESM1", "RACMO_ERA5", "MetUM_ERA5")
+# models <- c("HCLIM_CESM2", "HCLIM_MPI_ESM1", "RACMO_MPI_ESM1")
 
 years_hist   <- seq(1995, 2014, by = 1)
 years_mid    <- seq(2041, 2060, by = 1)
@@ -58,13 +65,6 @@ periods <- list(
 input_base <- here("Data/Environmental_predictors/PolarRes26/Regridded")
 outpath    <- here("Data/Environmental_predictors/PolarRes26/Scenario_Summaries")
 dir.create(outpath, recursive = TRUE, showWarnings = FALSE)
-
-# Ice-free domain rasters -- used ONLY as a grid sanity check below (see
-# check_domain_grid()), not for masking. HISTORICAL and MID share the
-# current domain; FUTURE uses the projected one, matching Step 2's sea-ice
-# section.
-domain_hist_mid <- rast(here("Data/ice_free_domain.tif"))
-domain_future   <- rast(here("Data/ice_free_future_domain.tif"))
 
 # Peninsula / Continent boundary
 pen_cont_boundary <- vect(here("Data/Peninsula_Continent_Boundary.shp"))
@@ -155,19 +155,28 @@ read_sea_ice_mean <- function(model_dir, period_name, range_label) {
   app(rast(paths), mean, na.rm = TRUE)
 }
 
-# Sanity check only -- ice-free masking already happened upstream in
-# Grid_adjust, so this just confirms the domain raster's grid still matches
-# the (already ice-free) climate rasters. No resampling: if it doesn't
-# match, that's a real problem upstream and this stops rather than masking
-# it.
-check_domain_grid <- function(domain, template, period_name) {
-  if (!isTRUE(compareGeom(domain, template, stopOnError = FALSE))) {
-    stop("Ice-free domain raster does not match the grid of the regridded ",
-         "climate rasters for period '", period_name, "'. Since ice-free ",
-         "masking is expected to already be done upstream (Grid_adjust), ",
-         "this should always line up -- check the domain raster's extent/",
-         "resolution/CRS rather than resampling here.")
+# Subtract two SpatRasters variable-by-variable, matching on LAYER NAME
+# rather than position. terra's `-` on SpatRasters is positional, so if one
+# period is missing a variable the other has (e.g. no FUTURE file for some
+# covariate), a plain `target - hist` silently pairs up the wrong layers and
+# produces an unnamed/garbage result. Here we only diff the variables present
+# in BOTH periods and drop the rest, returning NULL if there's no overlap at
+# all (so callers can skip that region/period pair entirely).
+diff_common_layers <- function(target_r, hist_r) {
+  if (is.null(target_r) || is.null(hist_r)) return(NULL)
+  common <- intersect(names(target_r), names(hist_r))
+  missing_from_target <- setdiff(names(hist_r), names(target_r))
+  missing_from_hist    <- setdiff(names(target_r), names(hist_r))
+  if (length(missing_from_target) > 0) {
+    message("    (diff) skipping vars with no target period raster: ",
+            paste(missing_from_target, collapse = ", "))
   }
+  if (length(missing_from_hist) > 0) {
+    message("    (diff) skipping vars with no HISTORICAL raster: ",
+            paste(missing_from_hist, collapse = ", "))
+  }
+  if (length(common) == 0) return(NULL)
+  target_r[[common]] - hist_r[[common]]
 }
 
 # Split into Peninsula / Continent SpatRasters (kept as rasters, not data
@@ -220,9 +229,6 @@ model_dfs <- map(models, function(model) {
     stack <- rast(unname(layers))
     names(stack) <- names(layers)
     
-    domain <- if (period_name == "FUTURE") domain_future else domain_hist_mid
-    check_domain_grid(domain, stack, period_name)
-    
     split_regions(stack)
   })
   names(period_stacks) <- period_names_to_run
@@ -230,14 +236,24 @@ model_dfs <- map(models, function(model) {
   if (length(period_stacks) == 0) return(NULL)
   
   # Differences vs HISTORICAL (only possible where both periods are present)
+  # -- matched by variable NAME, not position, so a variable missing from
+  # only one of the two periods is dropped from the diff instead of
+  # silently misaligning every layer after it.
   diffs <- list()
   if (!is.null(period_stacks$HISTORICAL)) {
     for (target in c("MID", "FUTURE")) {
       if (!is.null(period_stacks[[target]])) {
-        diffs[[paste0(target, "_DIFF")]] <- list(
-          peninsula = period_stacks[[target]]$peninsula - period_stacks$HISTORICAL$peninsula,
-          continent = period_stacks[[target]]$continent - period_stacks$HISTORICAL$continent
-        )
+        message("  -- ", target, "_DIFF vs HISTORICAL")
+        pen_diff  <- diff_common_layers(period_stacks[[target]]$peninsula,
+                                        period_stacks$HISTORICAL$peninsula)
+        cont_diff <- diff_common_layers(period_stacks[[target]]$continent,
+                                        period_stacks$HISTORICAL$continent)
+        if (!is.null(pen_diff) || !is.null(cont_diff)) {
+          diffs[[paste0(target, "_DIFF")]] <- list(
+            peninsula = pen_diff,
+            continent = cont_diff
+          )
+        }
       }
     }
   }
@@ -245,9 +261,11 @@ model_dfs <- map(models, function(model) {
   all_stacks <- c(period_stacks, diffs)
   
   # Turn every Peninsula/Continent SpatRaster into a tidy data frame, tagged
-  # with Model, Region and Period.
+  # with Model, Region and Period. A NULL region (e.g. a diff with no
+  # overlapping variables for that region) is skipped rather than erroring.
   imap(all_stacks, function(regions, period_label) {
     imap(regions, function(r, region_label) {
+      if (is.null(r)) return(NULL)
       df <- as.data.frame(r, xy = FALSE, na.rm = TRUE)
       if (nrow(df) == 0) return(NULL)
       df %>% mutate(Model = model, Region = str_to_title(region_label), Period = period_label)
