@@ -15,13 +15,6 @@ inpath <- "/mnt/hpccs01/home/patterc2/n11222026/AntarcticFutureHabitat/Data/CHEL
 
 outpath <- "/mnt/hpccs01/home/patterc2/n11222026/AntarcticFutureHabitat/Data/CHELSA/comparison"
 
-# Load ice-free domain ----------------------------------------------------
-
-domain <- rast(here("Data/Environmental_predictors/ice_free_upsamp_1km.tif"))
-
-# Set domain values
-domain <- ifel(not.na(domain), 1, NA)
-
 
 ###################################
 # HISTORICAL (1981 - 2010) ------------------------------------------------
