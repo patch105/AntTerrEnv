@@ -34,6 +34,14 @@ names(coast_domain) <- "coast_domain"
 writeRaster(coast_domain, here("Data/coast_domain.tif"), overwrite = T)
 
 
+# 1b. Make a ocean mask from the coast - but keeping the maximum extent of ocean in with touches=T
+ocean_domain <- mask(Ant_extent_grid_10km, coast, inverse = T, updatevalue = NA, touches = T)
+
+names(ocean_domain) <- "ocean_domain" 
+
+writeRaster(ocean_domain, here("Data/ocean_domain.tif"), overwrite = T)
+
+
 # 2A. Ice-free areas, from Tóth and Terauds (2023) - polygon version supplied directly by Anikó Tóth
 
 ice_free <- vect(here("Data/rocks_Union_Land.shp"))
@@ -52,6 +60,15 @@ ice_free_domain_100m <- mask(Ant_extent_grid_100m, ice_free, updatevalue = NA, t
 names(ice_free_domain_100m) <- "ice_free_domain" 
 
 writeRaster(ice_free_domain_100m, here("Data/ice_free_domain_100m.tif"), overwrite = T)
+
+
+# Also make a 1km ice-free area version for some later calculations
+
+ice_free_domain_1km <- mask(Ant_extent_grid_1km, ice_free, updatevalue = NA, touches = T)
+
+names(ice_free_domain_1km) <- "ice_free_domain" 
+
+writeRaster(ice_free_domain_1km, here("Data/ice_free_domain_1km.tif"), overwrite = T)
 
 
 # 2B. FUTURE ice-free areas, from Lee et al. (2017) 
