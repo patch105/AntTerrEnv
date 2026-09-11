@@ -101,6 +101,16 @@ crsfix <- "GEOGCRS[\"Rotated_pole\",
             ANGLEUNIT[\"degree\",0.0174532925199433,
                 ID[\"EPSG\",9122]]]]"
 
+# Known HCLIM quirk (see Script 3): some HCLIM outputs come out of Script 1
+# with no CRS attached, even though their grid/extent is fine. Only ever
+# used as a source of CRS metadata -- never as data -- and only after the
+# extent of the broken input has been checked against this template's
+# extent (see the fix applied inside load_variable_series()).
+hclim_crs_template_path <- here(
+  "Data/PolarRes26/HCLIM_CESM2/historical/r11i1p1f1/HCLIM43-ALADIN/v1-r1/day/hurs/v20251130/",
+  "hurs_ANT-12_CESM2_historical_r11i1p1f1_HCLIMcom-DMI_HCLIM43-ALADIN_v1-r1_day_19860101-19901231.nc"
+)
+
 # ---- 2. Generic engine: find files, load a continuous daily series -------------
 
 find_variable_files <- function(model_dir, variable_name, scenario) {
@@ -126,6 +136,31 @@ load_variable_series <- function(model_dir, variable_name, scenario) {
   if (needs_gridfix) {
     terra::set.crs(r, crsfix)
     terra::set.ext(r, exfix)
+  } else if (is.na(terra::crs(r)) || terra::crs(r) == "") {
+    
+    # Known HCLIM quirk: some HCLIM outputs come out of Script 1 with no
+    # CRS attached, even though their grid/extent is fine. Recover the CRS
+    # from a known-good HCLIM template file -- but only after confirming
+    # the extents actually line up, so we never silently stamp a wrong CRS
+    # onto a raster that doesn't actually match the template grid.
+    hclim_template <- terra::rast(hclim_crs_template_path)
+    
+    extents_match <- isTRUE(all.equal(
+      as.vector(terra::ext(r)), as.vector(terra::ext(hclim_template)),
+      tolerance = 1e-6
+    ))
+    
+    if (!extents_match) {
+      stop("Input raster has no CRS and its extent does not match the HCLIM ",
+           "CRS template (", hclim_crs_template_path, ") -- refusing to guess ",
+           "a CRS for a grid that doesn't line up.",
+           "\n  input extent:    ", paste(round(as.vector(terra::ext(r)), 4), collapse = ", "),
+           "\n  template extent: ", paste(round(as.vector(terra::ext(hclim_template)), 4), collapse = ", "))
+    }
+    
+    terra::crs(r) <- terra::crs(hclim_template)
+    message("  input had no CRS -- extent matched the HCLIM template, so CRS was ",
+            "copied from it.")
   }
   
   dates <- as.Date(terra::time(r))
