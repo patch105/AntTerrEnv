@@ -68,6 +68,7 @@ output_base <- here("Data/Environmental_predictors/PolarRes26/Regridded")
 coast_domain <- rast(here("Data/coast_domain.tif"))
 ice_free_domain <- rast(here("Data/ice_free_domain.tif"))
 ice_free_future_domain <- rast(here("Data/ice_free_future_domain.tif"))
+ocean_domain <- rast(here("Data/ocean_domain.tif"))
 
 # Template file used to recover a CRS for HCLIM inputs that come out of
 # Script 1/2 with an empty/missing CRS (a known HCLIM quirk). Only ever
@@ -365,7 +366,7 @@ message("  sea-ice file detected -- running gap-fill, coast/SG masking, 60S crop
 size_thresh <- 100
 
 r <- subst(r, NA, -999)
-r <- mask(r, coast_domain, inverse = TRUE)
+r <- mask(r, ocean_domain)
 
 missing <- r == -999
 miss_r <- ifel(missing, 1, NA)
