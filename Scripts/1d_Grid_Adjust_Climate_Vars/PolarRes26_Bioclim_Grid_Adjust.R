@@ -38,9 +38,9 @@ models <- c("HCLIM_CESM2", "HCLIM_MPI_ESM1", "HCLIM_ERA5", "RACMO_CESM2", "RACMO
 input_base  <- here("Data/Environmental_predictors/PolarRes26_Bioclim")
 output_base <- here("Data/Environmental_predictors/PolarRes26_Bioclim/Regridded")
 
-coast_domain           <- rast(here("Data/PolarRes26/coast_domain.tif"))
-ice_free_domain        <- rast(here("Data/PolarRes26/ice_free_domain.tif"))
-ice_free_future_domain <- rast(here("Data/PolarRes26/ice_free_future_domain.tif"))
+coast_domain           <- rast(here("Data/coast_domain.tif"))
+ice_free_domain        <- rast(here("Data/ice_free_domain.tif"))
+ice_free_future_domain <- rast(here("Data/Ice_free_future_domain.tif"))
 
 # Template file used to recover a CRS for HCLIM inputs that come out of
 # Script 1/2 with an empty/missing CRS (a known HCLIM quirk). Only ever
