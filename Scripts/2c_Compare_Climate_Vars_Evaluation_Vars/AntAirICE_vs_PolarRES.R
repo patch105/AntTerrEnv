@@ -37,6 +37,7 @@ library(purrr)
 library(patchwork)
 library(here)
 library(viridis)
+library(Metrics)
 
 # ---------------------------------------------------------------
 # OUTPATH
@@ -84,6 +85,7 @@ theme_storyline <- function(base_size = 11, base_family = "Helvetica") {
       axis.text          = element_text(size = 8.5, colour = "grey45"),
       axis.line          = element_line(colour = "grey60", linewidth = 0.35),
       axis.ticks         = element_line(colour = "grey60", linewidth = 0.35),
+      panel.border      = element_rect(colour = "grey60", fill = NA, linewidth = 0.35),
       panel.spacing      = unit(0.45, "cm"),
       legend.title       = element_text(size = 9.5, colour = "grey20"),
       legend.text        = element_text(size = 8.5, colour = "grey40")
@@ -170,7 +172,7 @@ build_panel_plot <- function(df_panel, col_label, ax_lim, ax_breaks,
   ggplot(df_panel, aes(x = x, y = y)) +
     stat_bin2d(breaks = list(x = common_breaks, y = common_breaks),
                aes(fill = after_stat(count))) +
-    geom_abline(slope = 1, intercept = 0, colour = "red", linewidth = 0.5) +
+    geom_abline(slope = 1, intercept = 0, colour = "black", linewidth = 0.4) +
     scale_fill_viridis_c(
       option   = "plasma",
       name     = "Number of\ngrid cells",
@@ -351,6 +353,477 @@ for (season in seasons) {
   )
   message(season, " plot saved.")
 }
+
+
+##############################################################################
+################ PART 3 - Summary Statistics ################################
+##############################################################################
+
+# ============================================================
+# MODEL PERFORMANCE METRICS
+# Mean Bias, RMSE, MAE and R2
+# ============================================================
+
+# ---------------------------------------------------------------
+# CALCULATE METRICS FOR ONE MODEL / ONE SEASON
+# ---------------------------------------------------------------
+calculate_metrics <- function(ref, mod) {
+  
+  # Align AntAirICE to the model grid, exactly as in the
+  # scatter-density plots
+  ref <- align_to_model(ref, mod)
+  
+  # Extract paired values
+  vals <- data.frame(
+    actual    = as.vector(values(ref)),
+    predicted = as.vector(values(mod))
+  )
+  
+  # Keep only grid cells where BOTH are non-NA
+  vals <- vals[complete.cases(vals), ]
+  
+  # Mean bias: model - AntAirICE
+  mean_bias <- mean(vals$predicted - vals$actual)
+  
+  # RMSE
+  rmse <- Metrics::rmse(
+    actual    = vals$actual,
+    predicted = vals$predicted
+  )
+  
+  # Mean absolute error
+  mae <- Metrics::mae(
+    actual    = vals$actual,
+    predicted = vals$predicted
+  )
+  
+  # R2 from a linear model
+  lm_fit <- lm(predicted ~ actual, data = vals)
+  r2 <- summary(lm_fit)$r.squared
+  
+  data.frame(
+    n_grid_cells = nrow(vals),
+    mean_bias    = mean_bias,
+    RMSE         = rmse,
+    MAE          = mae,
+    R2           = r2
+  )
+}
+
+
+# ---------------------------------------------------------------
+# CALCULATE AND SAVE METRICS
+# ---------------------------------------------------------------
+
+# Only seasons with an AntAirICE reference raster
+metric_seasons <- names(ref_files)
+
+for (season in metric_seasons) {
+  
+  message("Calculating metrics for ", season, " ...")
+  
+  # AntAirICE reference
+  ref <- rast(
+    here(
+      "Data/Environmental_predictors",
+      ref_files[[season]]
+    )
+  )
+  
+  # Calculate metrics for every model configuration
+  metrics_df <- pmap_dfr(
+    model_config,
+    function(model, driving, row_group, col_label, folder) {
+      
+      mod_path <- here(
+        "Data/Environmental_predictors/PolarRes26/Regridded",
+        folder,
+        "comparison",
+        paste0(
+          "Mean_",
+          season,
+          "_Temperature_HISTORICAL_2003_2014_ICEFREE.tif"
+        )
+      )
+      
+      mod <- rast(mod_path)
+      
+      metrics <- calculate_metrics(ref, mod)
+      
+      metrics$model     <- model
+      metrics$driving   <- driving
+      metrics$row_group <- row_group
+      metrics$season    <- season
+      
+      metrics
+    }
+  )
+  
+  # Put identifying columns first
+  metrics_df <- metrics_df %>%
+    select(
+      season,
+      row_group,
+      model,
+      driving,
+      n_grid_cells,
+      mean_bias,
+      RMSE,
+      MAE,
+      R2
+    )
+  
+  # Save one CSV per season
+  write.csv(
+    metrics_df,
+    file.path(
+      outpath,
+      paste0(
+        "AntAirICE_model_metrics_",
+        tolower(season),
+        ".csv"
+      )
+    ),
+    row.names = FALSE
+  )
+  
+  message(season, " metrics saved.")
+}
+
+
+##############################################################################
+################ PART 3B - MEAN BIAS PLOT ################################
+##############################################################################
+
+# ===============================================================
+# BIAS HEATMAP
+#
+# Rows:
+#   Storyline 1
+#   Storyline 2
+#   ERA5
+#
+# Column groups:
+#   HCLIM   ALL DJF JJA
+#   RACMO   ALL DJF JJA
+#   MetUM   ALL DJF JJA
+# ===============================================================
+
+
+# ---------------------------------------------------------------
+# LOAD METRICS OUTPUT
+# ---------------------------------------------------------------
+
+metric_files <- c(
+  Annual = file.path(outpath, "AntAirICE_model_metrics_annual.csv"),
+  Summer = file.path(outpath, "AntAirICE_model_metrics_summer.csv"),
+  Winter = file.path(outpath, "AntAirICE_model_metrics_winter.csv")
+)
+
+# Load files that exist
+bias_df <- bind_rows(
+  lapply(names(metric_files), function(season) {
+    
+    if (file.exists(metric_files[[season]])) {
+      df <- read.csv(metric_files[[season]])
+      df$season <- season
+      df
+      
+    } else {
+      data.frame()
+    }
+  })
+)
+
+
+# ---------------------------------------------------------------
+# ADD EMPTY WINTER DATA IF WINTER FILE DOES NOT EXIST YET
+# ---------------------------------------------------------------
+
+if (!"Winter" %in% bias_df$season) {
+  
+  winter_empty <- tribble(
+    ~model,   ~driving,
+    "HCLIM",  "MPI_ESM1",
+    "RACMO",  "MPI_ESM1",
+    "HCLIM",  "CESM2",
+    "RACMO",  "CESM2",
+    "HCLIM",  "ERA5",
+    "RACMO",  "ERA5",
+    "MetUM",  "ERA5"
+  )
+  
+  winter_empty$season <- "Winter"
+  winter_empty$mean_bias <- NA_real_
+  
+  bias_df <- bind_rows(
+    bias_df,
+    winter_empty
+  )
+}
+
+
+# ---------------------------------------------------------------
+# DEFINE MODEL / STORYLINE STRUCTURE
+# ---------------------------------------------------------------
+
+model_structure <- tribble(
+  ~row_group,          ~model,  ~driving,    ~model_group,
+  "Storyline 1",       "HCLIM", "MPI_ESM1",  "HCLIM",
+  "Storyline 1",       "RACMO", "MPI_ESM1",  "RACMO",
+  "Storyline 2",       "HCLIM", "CESM2",     "HCLIM",
+  "Storyline 2",       "RACMO", "CESM2",     "RACMO",
+  "ERA5",              "HCLIM", "ERA5",      "HCLIM",
+  "ERA5",              "RACMO", "ERA5",      "RACMO",
+  "ERA5",              "MetUM", "ERA5",      "MetUM"
+)
+
+
+# ---------------------------------------------------------------
+# ADD MODEL / STORYLINE INFORMATION
+# ---------------------------------------------------------------
+
+bias_df <- bias_df %>%
+  mutate(
+    model_key = paste(model, driving, sep = "_")
+  ) %>%
+  left_join(
+    model_structure,
+    by = c("model", "driving")
+  ) %>%
+  mutate(
+    season_label = recode(
+      season,
+      "Annual" = "ALL",
+      "Summer" = "DJF",
+      "Winter" = "JJA"
+    )
+  )
+
+
+# ---------------------------------------------------------------
+# CREATE COMPLETE 3 x 3 x 3 GRID
+#
+# This ensures:
+#   - all three seasons are present
+#   - MetUM cells are empty for Storyline 1 and Storyline 2
+#   - JJA cells are empty until winter data exist
+# ---------------------------------------------------------------
+
+plot_grid <- expand_grid(
+  row_group = c(
+    "Storyline 1",
+    "Storyline 2",
+    "ERA5"
+  ),
+  model_group = c(
+    "HCLIM",
+    "RACMO",
+    "MetUM"
+  ),
+  season_label = c(
+    "ALL",
+    "DJF",
+    "JJA"
+  )
+) %>%
+  left_join(
+    model_structure,
+    by = c("row_group", "model_group")
+  ) %>%
+  left_join(
+    bias_df %>%
+      select(
+        model,
+        driving,
+        season_label,
+        mean_bias
+      ),
+    by = c(
+      "model",
+      "driving",
+      "season_label"
+    )
+  )
+
+
+# ---------------------------------------------------------------
+# SET ORDER
+# ---------------------------------------------------------------
+
+plot_grid$row_group <- factor(
+  plot_grid$row_group,
+  levels = rev(c(
+    "Storyline 1",
+    "Storyline 2",
+    "ERA5"
+  ))
+)
+
+plot_grid$model_group <- factor(
+  plot_grid$model_group,
+  levels = c(
+    "HCLIM",
+    "RACMO",
+    "MetUM"
+  )
+)
+
+plot_grid$season_label <- factor(
+  plot_grid$season_label,
+  levels = c(
+    "ALL",
+    "DJF",
+    "JJA"
+  )
+)
+
+
+# ---------------------------------------------------------------
+# SYMMETRIC BIAS SCALE
+# ---------------------------------------------------------------
+
+max_bias <- max(
+  abs(plot_grid$mean_bias),
+  na.rm = TRUE
+)
+
+# Round limit up to nearest 0.5
+bias_limit <- ceiling(max_bias * 2) / 2
+
+
+# ---------------------------------------------------------------
+# BUILD HEATMAP
+# ---------------------------------------------------------------
+
+bias_plot <- ggplot(
+  plot_grid,
+  aes(
+    x = season_label,
+    y = row_group
+  )
+) +
+  
+  geom_tile(
+    aes(fill = mean_bias),
+    colour = "white",
+    linewidth = 0.8,
+    na.rm = FALSE
+  ) +
+  
+  geom_text(
+    aes(
+      label = ifelse(
+        is.na(mean_bias),
+        "",
+        sprintf("%.2f", mean_bias)
+      ),
+      colour = ifelse(
+        is.na(mean_bias),
+        "black",
+        ifelse(
+          abs(mean_bias) > bias_limit * 0.45,
+          "white",
+          "black"
+        )
+      )
+    ),
+    size = 4
+  ) +
+  
+  scale_colour_identity() +
+  
+  scale_fill_gradient2(
+    low = "#2C7BB6",
+    mid = "white",
+    high = "#D7191C",
+    midpoint = 0,
+    limits = c(
+      -bias_limit,
+      bias_limit
+    ),
+    name = "Mean bias (\u00B0C)",
+    na.value = "grey95"
+  ) +
+  
+  facet_grid(
+    . ~ model_group
+  ) +
+  
+  labs(
+    x = NULL,
+    y = NULL
+  ) +
+  
+  coord_fixed() +
+  
+  theme_classic() +
+  
+  theme(
+    # Row labels
+    axis.text.y = element_text(
+      size = 11.5,
+      face = "bold",
+      colour = "black"
+    ),
+    
+    # ALL / DJF / JJA
+    axis.text.x = element_text(
+      size = 10.5,
+      colour = "black"
+    ),
+    
+    axis.ticks = element_line(
+      colour = "grey60",
+      linewidth = 0.35
+    ),
+    
+    axis.line = element_blank(),
+    
+    # HCLIM / RACMO / MetUM headings
+    strip.background = element_blank(),
+    
+    strip.text = element_text(
+      size = 10.5,
+      colour = "black"
+    ),
+    
+    # Remove gaps between the three column groups
+    panel.spacing.x = unit(0.8, "lines"),
+    
+    legend.title = element_text(
+      size = 10.5
+    ),
+    
+    legend.text = element_text(
+      size = 9.5
+    ),
+    
+    legend.key.height = unit(1, "cm"),
+    
+    legend.key.width = unit(0.35, "cm"),
+    
+    plot.margin = margin(
+      5, 5, 5, 5
+    )
+  )
+
+
+# ---------------------------------------------------------------
+# SAVE
+# ---------------------------------------------------------------
+
+ggsave(
+  file.path(
+    outpath,
+    "AntAirICE_model_bias_heatmap_grouped.png"
+  ),
+  bias_plot,
+  width = 7.5,
+  height = 3.8,
+  dpi = 300
+)
+
 
 
 
