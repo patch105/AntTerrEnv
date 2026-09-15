@@ -1,25 +1,51 @@
-
-
-# VERSION 1. JUST HCLIM VARIABLES -----------------------------------------
+# ============================================================
+# AntAirICE vs HCLIM / RACMO / MetUM temperature evaluation
+# Combined Storyline 1 / Storyline 2 / ERA5 Re-analysis figure
+# ============================================================
+#
+# ASSUMPTIONS (check / adjust before running):
+#  1. Model rasters all follow:
+#       Data/Environmental_predictors/PolarRes26/Regridded/<MODEL>_<DRIVING>/comparison/
+#         Mean_<Season>_Temperature_HISTORICAL_2003_2014_ICEFREE.tif
+#     e.g. HCLIM_ERA5, RACMO_ERA5, MetUM_ERA5, HCLIM_MPI_ESM1, etc.
+#  2. MetUM only exists for the ERA5-driven run (per your layout),
+#     so it only appears in row 3. Rows 1-2 (Storyline 1/2) have
+#     just HCLIM + RACMO, and those two panels stretch to fill the
+#     same overall width as row 3's three panels (they end up a
+#     little taller as a result, which is expected/fine).
+#  3. No AntAirICE winter observations exist yet, so the winter
+#     figure is a placeholder: same row/column template, each panel
+#     shows a light-grey "Data pending" tile instead of real data.
+#     Swap in `Mean_Winter_Temp_ICEFREE.tif` and re-run once that
+#     data exists - the real scatter-density code path is already
+#     wired up, it's just skipped for "Winter" below.
+#  4. Figure sizing/text sizes are tuned to stay legible when the
+#     PNG is pasted into an A4 page (see ggsave() calls at the end).
+#  5. The fill (grid-cell count) legend is a single continuous scale
+#     computed ONCE from the combined Annual + Summer data, and that
+#     same scale (axis limits, bin edges, and colour limits) is reused
+#     for every season's figure - so the legend/colours mean exactly
+#     the same thing whether you're looking at the Annual, Summer, or
+#     Winter (placeholder) PNG.
+#
+# ============================================================
 
 library(terra)
 library(ggplot2)
-library(tidyr)
 library(dplyr)
+library(purrr)
 library(patchwork)
 library(here)
 library(viridis)
 
-
-
-# OUTPATH -----------------------------------------------------------------
-
+# ---------------------------------------------------------------
+# OUTPATH
+# ---------------------------------------------------------------
 outpath <- here("Plots/Evaluation_AntAirICE")
 
-
-# ============================================================
-# HELPER: resample ref onto mod's grid (bilinear) if needed
-# ============================================================
+# ---------------------------------------------------------------
+# HELPERS (unchanged logic from original script)
+# ---------------------------------------------------------------
 align_to_model <- function(ref, mod) {
   if (!compareGeom(ref, mod, stopOnError = FALSE)) {
     ref <- resample(ref, mod, method = "bilinear")
@@ -27,9 +53,6 @@ align_to_model <- function(ref, mod) {
   ref
 }
 
-# ============================================================
-# HELPER: extract non-NA paired values from two rasters
-# ============================================================
 extract_pairs <- function(ref, mod, label) {
   ref <- align_to_model(ref, mod)
   vals <- data.frame(
@@ -41,95 +64,297 @@ extract_pairs <- function(ref, mod, label) {
   vals
 }
 
-# ============================================================
-# LOAD DATA
-# ============================================================
-AntAir_annual <- rast(here("Data/Environmental_predictors/Mean_Annual_Temp_ICEFREE.tif"))
-AntAir_summer <- rast(here("Data/Environmental_predictors/Mean_Summer_Temp_ICEFREE.tif"))
+# ---------------------------------------------------------------
+# STYLE (approximating the reference figure: clean sans-serif,
+# bold left-aligned titles, muted gridlines/axis text)
+# ---------------------------------------------------------------
+# Row-title colour lives here so it's defined once and reused by both
+# the real panels (build_row_plot) and the placeholder panels
+# (build_placeholder_row) - a "darkish grey", not near-black.
+row_title_colour <- "grey35"
 
-# --- Annual model rasters ---
-hclim_mpi_ann  <- rast(here("Data/Environmental_predictors/PolarRes26/Regridded/HCLIM_MPI_ESM1/Mean_Annual_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-hclim_cesm_ann <- rast(here("Data/Environmental_predictors/PolarRes26/Regridded/HCLIM_CESM2/Mean_Annual_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-
-# --- Summer model rasters ---
-hclim_mpi_sum  <- rast(here("Data/Environmental_predictors/PolarRes26/Regridded/HCLIM_MPI_ESM1/Mean_Summer_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-hclim_cesm_sum <- rast(here("Data/Environmental_predictors/PolarRes26/Regridded/HCLIM_CESM2/Mean_Summer_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-
-# ============================================================
-# PLOT 1: Scatter-density panels  (AntAirICE vs each model)
-# ============================================================
-
-model_labels <- c("HCLIM-MPI-ESM1", "HCLIM-CESM2")
-
-ann_pairs <- bind_rows(
-  extract_pairs(AntAir_annual, hclim_mpi_ann,  "HCLIM-MPI-ESM1"),
-  extract_pairs(AntAir_annual, hclim_cesm_ann, "HCLIM-CESM2")
-)
-ann_pairs$model <- factor(ann_pairs$model, levels = model_labels)
-
-sum_pairs <- bind_rows(
-  extract_pairs(AntAir_summer, hclim_mpi_sum,  "HCLIM-MPI-ESM1"),
-  extract_pairs(AntAir_summer, hclim_cesm_sum, "HCLIM-CESM2")
-)
-sum_pairs$model <- factor(sum_pairs$model, levels = model_labels)
-
-# Shared axis limits (use full combined range)
-all_vals <- c(ann_pairs$x, ann_pairs$y, sum_pairs$x, sum_pairs$y)
-ax_lim <- range(all_vals, na.rm = TRUE)
-
-# Function to build one faceted scatter-density row
-scatter_density_row <- function(df, row_title) {
-  ggplot(df, aes(x = x, y = y)) +
-    stat_bin2d(bins = 150, aes(fill = after_stat(count))) +
-    geom_abline(slope = 1, intercept = 0, colour = "red", linewidth = 0.5) +
-    scale_fill_viridis_c(
-      option  = "plasma",
-      name    = "Number of\ngrid cells",
-      trans   = "sqrt",          # sqrt compression like the reference
-      limits  = c(1, NA),
-      na.value= NA
-    ) +
-    scale_x_continuous(limits = ax_lim, breaks = seq(-30, 10, 10)) +
-    scale_y_continuous(limits = ax_lim, breaks = seq(-30, 10, 10)) +
-    coord_fixed() +
-    facet_wrap(~ model, nrow = 1, strip.position = "top") +
-    labs(
-      x    = "Temperature (AntAirICE) [°C]",
-      y    = paste0("Temperature (Model) [°C]"),
-      title= row_title
-    ) +
-    theme_classic(base_size = 9) +
+theme_storyline <- function(base_size = 11, base_family = "Helvetica") {
+  theme_classic(base_size = base_size, base_family = base_family) %+replace%
     theme(
-      strip.background  = element_blank(),
-      strip.text        = element_text(face = "bold", size = 9),
-      legend.position   = "right",
-      legend.key.height = unit(1.8, "cm"),
-      legend.key.width  = unit(0.35, "cm"),
-      panel.spacing     = unit(0.4, "cm"),
-      plot.title        = element_text(face = "bold", size = 10, hjust = 0.5),
-      axis.title.y      = element_text(size = 8),
-      axis.title.x      = element_text(size = 8)
+      strip.background   = element_blank(),
+      strip.text         = element_text(face = "bold", size = 10.5, colour = "grey20"),
+      plot.title         = element_text(face = "bold", size = 12.5, hjust = 0,
+                                        colour = "grey15", margin = margin(b = 6)),
+      axis.title         = element_text(size = 9.5, colour = "grey30"),
+      axis.text          = element_text(size = 8.5, colour = "grey45"),
+      axis.line          = element_line(colour = "grey60", linewidth = 0.35),
+      axis.ticks         = element_line(colour = "grey60", linewidth = 0.35),
+      panel.spacing      = unit(0.45, "cm"),
+      legend.title       = element_text(size = 9.5, colour = "grey20"),
+      legend.text        = element_text(size = 8.5, colour = "grey40")
     )
 }
 
-p_ann <- scatter_density_row(ann_pairs, "Mean annual temperature")
-p_sum <- scatter_density_row(sum_pairs, "Mean summer temperature")
+# ---------------------------------------------------------------
+# MODEL CONFIGURATION
+#   row_group : which storyline row the panel belongs to
+#   col_label : which model column (sub-heading) the panel belongs to
+#   folder    : subfolder name under .../Regridded/
+# ---------------------------------------------------------------
+row_levels <- c("Storyline 1", "Storyline 2", "ERA5 Re-analysis")
+# Column order per row comes from the order models appear in
+# `model_config` below (HCLIM, RACMO, [MetUM]) - no separate
+# level list needed now that rows only build the panels they have.
 
-plot1 <- p_ann / p_sum +
-  plot_annotation(
-    title   = "AntAirICE vs HCLIM temperatures",
-    theme   = theme(plot.title = element_text(face = "bold", size = 11, hjust = 0.5))
+model_config <- tribble(
+  ~model,   ~driving,     ~row_group,
+  "HCLIM",  "MPI_ESM1",   "Storyline 1",
+  "RACMO",  "MPI_ESM1",   "Storyline 1",
+  "HCLIM",  "CESM2",      "Storyline 2",
+  "RACMO",  "CESM2",      "Storyline 2",
+  "HCLIM",  "ERA5",       "ERA5 Re-analysis",
+  "RACMO",  "ERA5",       "ERA5 Re-analysis",
+  "MetUM",  "ERA5",       "ERA5 Re-analysis"
+) %>%
+  mutate(
+    col_label = model,
+    folder    = paste0(model, "_", driving)
   )
 
-ggsave(
-  file.path(outpath, "AntAirICE_vs_HCLIM_scatter_density.png"),
-  plot1,
-  width  = 9,
-  height = 7,
-  dpi    = 300,
-  bg     = "white"
+# ---------------------------------------------------------------
+# SEASON DEFINITIONS
+# ---------------------------------------------------------------
+seasons <- c("Annual", "Summer", "Winter")
+
+ref_files <- c(
+  Annual = "Mean_Annual_Temp_ICEFREE.tif",
+  Summer = "Mean_Summer_Temp_ICEFREE.tif"
+  # Winter: not yet available - add e.g. "Mean_Winter_Temp_ICEFREE.tif"
+  # here and remove "Winter" from `placeholder_seasons` below once it exists.
 )
-message("Plot 1 saved.")
+
+# ---------------------------------------------------------------
+# BUILD PAIRED DATA FOR ONE SEASON
+# ---------------------------------------------------------------
+build_season_pairs <- function(season) {
+  ref <- rast(here("Data/Environmental_predictors", ref_files[[season]]))
+  
+  pmap_dfr(model_config, function(model, driving, row_group, col_label, folder) {
+    mod_path <- here(
+      "Data/Environmental_predictors/PolarRes26/Regridded",
+      folder, "comparison",
+      paste0("Mean_", season, "_Temperature_HISTORICAL_2003_2014_ICEFREE.tif")
+    )
+    mod <- rast(mod_path)
+    df <- extract_pairs(ref, mod, label = paste(model, driving, sep = "_"))
+    df$row_group <- row_group
+    df$col_label <- col_label
+    df
+  })
+}
+
+# ---------------------------------------------------------------
+# SHARED FILL SCALE LIMIT (so the single collected legend is
+# valid across every panel, in every row, AND across every season's
+# saved figure - see the global computation before the main loop)
+# ---------------------------------------------------------------
+get_shared_fill_limit <- function(df, breaks) {
+  x_bin <- cut(df$x, breaks = breaks, include.lowest = TRUE)
+  y_bin <- cut(df$y, breaks = breaks, include.lowest = TRUE)
+  grp   <- interaction(df$row_group, df$col_label, drop = TRUE)
+  max(table(grp, x_bin, y_bin))
+}
+
+# ---------------------------------------------------------------
+# BUILD ONE PANEL (a single model vs AntAirICE)
+# ---------------------------------------------------------------
+build_panel_plot <- function(df_panel, col_label, ax_lim, ax_breaks,
+                             common_breaks, fill_limit) {
+  df_panel$col_label <- col_label
+  
+  ggplot(df_panel, aes(x = x, y = y)) +
+    stat_bin2d(breaks = list(x = common_breaks, y = common_breaks),
+               aes(fill = after_stat(count))) +
+    geom_abline(slope = 1, intercept = 0, colour = "red", linewidth = 0.5) +
+    scale_fill_viridis_c(
+      option   = "plasma",
+      name     = "Number of\ngrid cells",
+      limits   = c(1, fill_limit),
+      oob      = scales::squish,
+      na.value = NA
+    ) +
+    scale_x_continuous(limits = ax_lim, breaks = ax_breaks) +
+    scale_y_continuous(limits = ax_lim, breaks = ax_breaks) +
+    coord_fixed() +
+    facet_wrap(~ col_label, nrow = 1) +
+    labs(
+      x = "Temperature (AntAir ICE) [\u00B0C]",
+      y = "Temperature (Model) [\u00B0C]"
+    ) +
+    theme_storyline()
+}
+
+# ---------------------------------------------------------------
+# BUILD ONE ROW (Storyline 1 / Storyline 2 / ERA5 Re-analysis)
+# Each row only contains the panels that actually exist for it
+# (2 for the storylines, 3 for ERA5). Because every row is wrapped
+# to the SAME overall figure width, a 2-panel row automatically
+# stretches those panels to fill the full width - no empty "MetUM"
+# slot needed. Panels stay square (coord_fixed), so 2-panel rows
+# end up a little taller than the 3-panel row, which is fine.
+# ---------------------------------------------------------------
+build_row_plot <- function(season_df, row_title, ax_lim, ax_breaks,
+                           common_breaks, fill_limit) {
+  row_config <- filter(model_config, row_group == row_title)
+  
+  panels <- lapply(row_config$col_label, function(cl) {
+    df_panel <- filter(season_df, row_group == row_title, col_label == cl)
+    build_panel_plot(df_panel, cl, ax_lim, ax_breaks, common_breaks, fill_limit)
+  })
+  
+  wrap_plots(panels, nrow = 1) +
+    plot_annotation(
+      title = row_title,
+      theme = theme(
+        plot.title = element_text(face = "bold", size = 12.5, hjust = 0,
+                                  colour = row_title_colour, margin = margin(b = 6),
+                                  family = "Helvetica")
+      )
+    )
+}
+
+# ---------------------------------------------------------------
+# BUILD FULL SEASON FIGURE (3 rows, shared legend, no overall title)
+# ax_lim / ax_breaks / common_breaks / fill_limit are now passed in
+# from the GLOBAL computation below, rather than recomputed per
+# season, so the continuous fill legend is identical across the
+# Annual, Summer, and Winter figures.
+# ---------------------------------------------------------------
+make_season_plot <- function(season_df, ax_lim, ax_breaks, common_breaks, fill_limit) {
+  row_plots <- lapply(row_levels, function(rg) {
+    build_row_plot(season_df, rg, ax_lim, ax_breaks, common_breaks, fill_limit)
+  })
+  
+  wrap_plots(row_plots, ncol = 1) +
+    plot_layout(guides = "collect") &
+    theme(
+      legend.position   = "right",
+      legend.key.height = unit(1.6, "cm"),
+      legend.key.width  = unit(0.35, "cm")
+    )
+}
+
+# ---------------------------------------------------------------
+# PLACEHOLDER FIGURE (used while a season has no observed data,
+# e.g. winter AntAirICE not yet available). Keeps the same row
+# titles / model sub-headings as the real figures, and the same
+# "stretch to fill the row" behaviour for the 2-panel rows, so it
+# drops in seamlessly once real data exists - just remove this
+# season from `placeholder_seasons` below.
+# ---------------------------------------------------------------
+placeholder_seasons <- c("Winter")
+
+build_placeholder_panel <- function(col_label) {
+  df <- data.frame(col_label = col_label, x = 0.5, y = 0.5)
+  
+  ggplot(df, aes(x = x, y = y)) +
+    geom_text(label = "Data pending", size = 3.6, fontface = "italic",
+              colour = "grey55", family = "Helvetica") +
+    facet_wrap(~ col_label, nrow = 1) +
+    scale_x_continuous(limits = c(0, 1)) +
+    scale_y_continuous(limits = c(0, 1)) +
+    coord_fixed() +
+    theme_storyline() +
+    theme(
+      axis.text        = element_blank(),
+      axis.ticks       = element_blank(),
+      axis.title       = element_blank(),
+      axis.line        = element_blank(),
+      panel.background = element_rect(fill = "grey94", colour = NA)
+    )
+}
+
+build_placeholder_row <- function(row_title) {
+  row_config <- filter(model_config, row_group == row_title)
+  panels <- lapply(row_config$col_label, build_placeholder_panel)
+  
+  wrap_plots(panels, nrow = 1) +
+    plot_annotation(
+      title = row_title,
+      theme = theme(
+        plot.title = element_text(face = "bold", size = 12.5, hjust = 0,
+                                  colour = row_title_colour, margin = margin(b = 6),
+                                  family = "Helvetica")
+      )
+    )
+}
+
+make_placeholder_plot <- function() {
+  row_plots <- lapply(row_levels, build_placeholder_row)
+  wrap_plots(row_plots, ncol = 1)
+}
+
+# ---------------------------------------------------------------
+# GLOBAL SCALE (computed once, from the combined Annual + Summer
+# data, and reused for every season's figure below). This is what
+# makes the "Number of grid cells" legend continuous and identical
+# across the Annual / Summer / Winter(placeholder) PNGs, instead of
+# each figure silently rescaling to its own max count.
+#
+# The legend is additionally hard-capped at 400: if the raw shared
+# max is higher, fill_limit is clamped to 400 and any bin with more
+# than 400 grid cells is squished (scales::squish, set in
+# build_panel_plot) into the top colour rather than being dropped
+# as NA or stretching the scale to a rarely-hit outlier bin.
+# ---------------------------------------------------------------
+real_seasons <- setdiff(seasons, placeholder_seasons)
+
+season_pairs_cache <- setNames(
+  lapply(real_seasons, build_season_pairs),
+  real_seasons
+)
+
+all_pairs <- bind_rows(season_pairs_cache)
+
+raw_lim   <- range(c(all_pairs$x, all_pairs$y), na.rm = TRUE)
+ax_lim    <- c(floor(raw_lim[1] / 5) * 5, ceiling(raw_lim[2] / 5) * 5)
+ax_breaks <- seq(ax_lim[1], ax_lim[2], by = 10)
+
+# identical bin edges everywhere -> counts are directly comparable
+common_breaks <- seq(ax_lim[1], ax_lim[2], length.out = 151)  # 150 bins
+
+fill_limit <- min(get_shared_fill_limit(all_pairs, common_breaks), 400)
+
+# ---------------------------------------------------------------
+# RUN FOR EACH SEASON AND SAVE
+# Sizing is tuned for pasting/printing at A4 (210 x 297 mm /
+# 8.27 x 11.69 in): a bit narrower and shorter than the page so
+# margins remain, with a high dpi so text stays crisp when scaled.
+# ---------------------------------------------------------------
+a4_width  <- 7.8   # inches
+a4_height <- 10.5  # inches
+a4_dpi    <- 320
+
+for (season in seasons) {
+  message("Processing ", season, " ...")
+  
+  if (season %in% placeholder_seasons) {
+    season_plot <- make_placeholder_plot()
+  } else {
+    season_pairs <- season_pairs_cache[[season]]
+    season_plot  <- make_season_plot(season_pairs, ax_lim, ax_breaks,
+                                     common_breaks, fill_limit)
+  }
+  
+  ggsave(
+    file.path(outpath, paste0("AntAirICE_vs_Models_", tolower(season), ".png")),
+    season_plot,
+    width  = a4_width,
+    height = a4_height,
+    dpi    = a4_dpi,
+    bg     = "white"
+  )
+  message(season, " plot saved.")
+}
+
+
+
+############################################################################
 
 # ============================================================
 # PLOT 2: Bias raster maps  (2 columns x 2 rows)
@@ -198,6 +423,9 @@ ggsave(
   bg     = "white"
 )
 message("Plot 2 saved.")
+
+
+
 
 # ---------------------------------------------------------------
 
