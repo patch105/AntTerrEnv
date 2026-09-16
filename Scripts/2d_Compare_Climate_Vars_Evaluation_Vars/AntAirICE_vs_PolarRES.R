@@ -355,6 +355,333 @@ for (season in seasons) {
 }
 
 
+
+############################################################################
+
+# ============================================================
+# PLOT 2: Bias raster maps  (2 columns x 2 rows)
+# ============================================================
+
+
+
+# ============================================================
+# AntAirICE vs HCLIM / RACMO / MetUM - MEAN BIAS MAPS
+# Same Storyline 1 / Storyline 2 / ERA5-Reanalysis row layout as
+# AntAirICE_vs_Models_plots.R, showing spatial bias maps
+# (Model - AntAirICE) instead of scatter-density panels, styled
+# after the CHELSA-vs-HCLIM bias-map script (coastline underlay,
+# 10 km aggregation, zero-centred diverging colour scale).
+# ============================================================
+#
+# ASSUMPTIONS (check / adjust before running):
+#  1. Model rasters follow the same convention as the scatter-density
+#     script:
+#       Data/Environmental_predictors/PolarRes26/Regridded/<MODEL>_<DRIVING>/comparison/
+#         Mean_<Season>_Temperature_HISTORICAL_2003_2014_ICEFREE.tif
+#  2. MetUM only exists for the ERA5-driven run, so it only appears
+#     in row 3; rows 1-2 (2 panels) stretch to fill the same overall
+#     width as row 3 (3 panels) - exactly as in the scatter-density
+#     script, and for the same reason (no empty "MetUM" slot needed).
+#  3. No winter AntAirICE observations exist yet, so winter renders
+#     as a placeholder ("Data pending" tiles) - swap in the real file
+#     in `ref_files` and remove "Winter" from `placeholder_seasons`
+#     once it's available.
+#  4. Coastline shapefile path follows the CHELSA script:
+#       Data/add_coastline_medium_res_polygon_v7_10.shp
+#  5. Aggregation to 10 km (fact = 10) assumes native resolution is
+#     roughly 1 km, as in the CHELSA comparison script - adjust
+#     `agg_fact` below if your model grids are a different resolution.
+#
+# ============================================================
+
+library(terra)
+library(ggplot2)
+library(dplyr)
+library(purrr)
+library(patchwork)
+library(here)
+library(sf)
+library(scales)
+
+# ---------------------------------------------------------------
+# OUTPATH
+# ---------------------------------------------------------------
+outpath <- here("Plots/Evaluation_AntAirICE")
+if (!dir.exists(outpath)) dir.create(outpath, recursive = TRUE)
+
+# ---------------------------------------------------------------
+# HELPERS
+# ---------------------------------------------------------------
+align_to_model <- function(ref, mod) {
+  if (!compareGeom(ref, mod, stopOnError = FALSE)) {
+    ref <- resample(ref, mod, method = "bilinear")
+  }
+  ref
+}
+
+rast_to_df <- function(r, val_name = "value") {
+  df <- as.data.frame(r, xy = TRUE, na.rm = TRUE)
+  names(df)[3] <- val_name
+  df
+}
+
+agg_fact <- 10  # aggregation factor - coarser cells "stand out" more visually
+
+# ---------------------------------------------------------------
+# DIVERGING COLOUR SCALE - zero always lines up with white, the
+# range doesn't have to be symmetric. Same construction as the
+# CHELSA vs HCLIM script.
+# ---------------------------------------------------------------
+diverging_ramp <- c(
+  "#053061", "#2166ac", "#4393c3", "#92c5de", "#d1e5f0",
+  "white",
+  "#fddbc7", "#f4a582", "#d6604d", "#b2182b", "#67001f"
+)
+
+make_scale_values <- function(min_val, max_val) {
+  white_pos <- (0 - min_val) / (max_val - min_val)
+  c(
+    0,
+    white_pos * 0.25, white_pos * 0.50, white_pos * 0.75, white_pos * 0.95,
+    white_pos,
+    white_pos + (1 - white_pos) * 0.15,
+    white_pos + (1 - white_pos) * 0.40,
+    white_pos + (1 - white_pos) * 0.65,
+    white_pos + (1 - white_pos) * 0.85,
+    1
+  )
+}
+
+make_cbar <- function() {
+  guide_colorbar(
+    barheight       = unit(3.2, "cm"),
+    barwidth        = unit(0.4, "cm"),
+    ticks.colour    = "black",
+    frame.colour    = "black",
+    frame.linewidth = 0.4
+  )
+}
+
+# ---------------------------------------------------------------
+# STYLE - no panel border/outline anywhere ("no outline around the
+# plots"); bold left-aligned titles to match the scatter-density
+# script's look.
+# ---------------------------------------------------------------
+theme_bias_map <- function(base_size = 11, base_family = "Helvetica") {
+  theme_void(base_size = base_size) +
+    theme(
+      text         = element_text(family = base_family),
+      plot.title   = element_text(face = "bold", size = 10.5, hjust = 0,
+                                  colour = "grey20", margin = margin(b = 4)),
+      legend.title = element_text(size = 9.5, colour = "grey20"),
+      legend.text  = element_text(size = 8.5, colour = "grey40"),
+      plot.margin  = margin(4, 4, 4, 4)
+    )
+}
+
+row_title_theme <- theme(
+  plot.title = element_text(face = "bold", size = 12.5, hjust = 0,
+                            colour = "grey15", margin = margin(b = 6),
+                            family = "Helvetica")
+)
+
+# ---------------------------------------------------------------
+# COASTLINE - lighter grey than the CHELSA script's grey85, no
+# outline of its own so it sits quietly behind the bias tiles.
+# ---------------------------------------------------------------
+coast <- st_read(
+  here("Data/add_coastline_medium_res_polygon_v7_10.shp"),
+  quiet = TRUE
+)
+coast_fill <- "grey95"
+
+# ---------------------------------------------------------------
+# MODEL CONFIGURATION (identical to the scatter-density script)
+# ---------------------------------------------------------------
+row_levels <- c("Storyline 1", "Storyline 2", "ERA5 Reanalysis")
+
+model_config <- tribble(
+  ~model,   ~driving,     ~row_group,
+  "HCLIM",  "MPI_ESM1",   "Storyline 1",
+  "RACMO",  "MPI_ESM1",   "Storyline 1",
+  "HCLIM",  "CESM2",      "Storyline 2",
+  "RACMO",  "CESM2",      "Storyline 2",
+  "HCLIM",  "ERA5",       "ERA5 Reanalysis",
+  "RACMO",  "ERA5",       "ERA5 Reanalysis",
+  "MetUM",  "ERA5",       "ERA5 Reanalysis"
+) %>%
+  mutate(
+    col_label = model,
+    folder    = paste0(model, "_", driving)
+  )
+
+# ---------------------------------------------------------------
+# SEASON DEFINITIONS
+# ---------------------------------------------------------------
+seasons <- c("Annual", "Summer", "Winter")
+placeholder_seasons <- c("Winter")
+
+ref_files <- c(
+  Annual = "Mean_Annual_Temp_ICEFREE.tif",
+  Summer = "Mean_Summer_Temp_ICEFREE.tif"
+  # Winter: not yet available - add here + remove from
+  # placeholder_seasons above once it exists.
+)
+
+# ---------------------------------------------------------------
+# BUILD BIAS RASTERS FOR ONE SEASON (Model - AntAirICE, aggregated
+# to 10 km)
+# ---------------------------------------------------------------
+build_season_bias <- function(season) {
+  ref <- rast(here("Data/Environmental_predictors", ref_files[[season]]))
+  
+  pmap(model_config, function(model, driving, row_group, col_label, folder) {
+    mod_path <- here(
+      "Data/Environmental_predictors/PolarRes26/Regridded",
+      folder, "comparison",
+      paste0("Mean_", season, "_Temperature_HISTORICAL_2003_2014_ICEFREE.tif")
+    )
+    mod       <- rast(mod_path)
+    diff      <- mod - align_to_model(ref, mod)
+    diff_10km <- aggregate(diff, fact = agg_fact, fun = "mean", na.rm = TRUE)
+    
+    list(row_group = row_group, col_label = col_label, r = diff_10km)
+  })
+}
+
+# ---------------------------------------------------------------
+# SHARED DIVERGING SCALE FOR ONE SEASON - every panel in that
+# season's figure uses this single scale, so the one collected
+# legend is valid everywhere.
+# ---------------------------------------------------------------
+get_season_scale <- function(bias_list) {
+  all_vals <- unlist(lapply(bias_list, function(b) values(b$r, na.rm = TRUE)))
+  diff_min <- floor(min(all_vals, na.rm = TRUE))
+  diff_max <- ceiling(max(all_vals, na.rm = TRUE))
+  list(
+    min    = diff_min,
+    max    = diff_max,
+    breaks = pretty(c(diff_min, diff_max), n = 6),
+    values = make_scale_values(diff_min, diff_max)
+  )
+}
+
+# ---------------------------------------------------------------
+# BUILD ONE BIAS PANEL (a single model's bias map vs AntAirICE)
+# ---------------------------------------------------------------
+build_bias_panel <- function(r, col_label, scale_info) {
+  df <- rast_to_df(r, "bias")
+  
+  ggplot() +
+    geom_sf(data = coast, fill = coast_fill, colour = "grey35", linewidth = 0.15) +
+    geom_tile(data = df, aes(x = x, y = y, fill = bias)) +
+    scale_fill_gradientn(
+      colours = diverging_ramp,
+      values  = scale_info$values,
+      limits  = c(scale_info$min, scale_info$max),
+      breaks  = scale_info$breaks,
+      name    = "Bias (\u00B0C)",
+      oob     = squish,
+      guide   = make_cbar()
+    ) +
+    coord_sf(expand = FALSE) +
+    labs(title = col_label) +
+    theme_bias_map()
+}
+
+# ---------------------------------------------------------------
+# BUILD ONE ROW (mirrors build_row_plot() in the scatter-density
+# script: only the panels that exist for this row are built, and
+# because every row is stacked into the same overall figure width,
+# a 2-panel row automatically stretches to fill it - no empty
+# "MetUM" slot needed for rows 1-2).
+# ---------------------------------------------------------------
+build_bias_row <- function(row_title, bias_list, scale_info) {
+  row_items <- Filter(function(b) b$row_group == row_title, bias_list)
+  
+  panels <- lapply(row_items, function(b) {
+    build_bias_panel(b$r, b$col_label, scale_info)
+  })
+  
+  wrap_plots(panels, nrow = 1) +
+    plot_annotation(title = row_title, theme = row_title_theme)
+}
+
+# ---------------------------------------------------------------
+# BUILD FULL SEASON BIAS FIGURE (3 rows, one shared legend, no
+# overall title)
+# ---------------------------------------------------------------
+make_season_bias_plot <- function(season) {
+  bias_list  <- build_season_bias(season)
+  scale_info <- get_season_scale(bias_list)
+  
+  row_plots <- lapply(row_levels, function(rg) {
+    build_bias_row(rg, bias_list, scale_info)
+  })
+  
+  wrap_plots(row_plots, ncol = 1) +
+    plot_layout(guides = "collect") &
+    theme(legend.position = "right")
+}
+
+# ---------------------------------------------------------------
+# PLACEHOLDER FIGURE (winter - no observations yet)
+# ---------------------------------------------------------------
+build_placeholder_panel <- function(col_label) {
+  df <- data.frame(x = 0.5, y = 0.5, label = "Data pending")
+  ggplot(df, aes(x = x, y = y, label = label)) +
+    geom_text(size = 3.6, fontface = "italic", colour = "grey55",
+              family = "Helvetica") +
+    scale_x_continuous(limits = c(0, 1)) +
+    scale_y_continuous(limits = c(0, 1)) +
+    coord_fixed() +
+    labs(title = col_label) +
+    theme_bias_map() +
+    theme(panel.background = element_rect(fill = "grey94", colour = NA))
+}
+
+build_placeholder_row <- function(row_title) {
+  row_config <- filter(model_config, row_group == row_title)
+  panels <- lapply(row_config$col_label, build_placeholder_panel)
+  
+  wrap_plots(panels, nrow = 1) +
+    plot_annotation(title = row_title, theme = row_title_theme)
+}
+
+make_placeholder_plot <- function() {
+  row_plots <- lapply(row_levels, build_placeholder_row)
+  wrap_plots(row_plots, ncol = 1)
+}
+
+# ---------------------------------------------------------------
+# RUN FOR EACH SEASON AND SAVE (A4-friendly sizing, matching the
+# scatter-density script)
+# ---------------------------------------------------------------
+a4_width  <- 7.8
+a4_height <- 10.5
+a4_dpi    <- 320
+
+for (season in seasons) {
+  message("Processing bias maps: ", season, " ...")
+  
+  season_plot <- if (season %in% placeholder_seasons) {
+    make_placeholder_plot()
+  } else {
+    make_season_bias_plot(season)
+  }
+  
+  ggsave(
+    file.path(outpath, paste0("AntAirICE_vs_Models_bias_", tolower(season), ".png")),
+    season_plot,
+    width  = a4_width,
+    height = a4_height,
+    dpi    = a4_dpi,
+    bg     = "white"
+  )
+  message(season, " bias plot saved.")
+}
+
+
 ##############################################################################
 ################ PART 3 - Summary Statistics ################################
 ##############################################################################
@@ -827,281 +1154,4 @@ ggsave(
 
 
 
-############################################################################
 
-# ============================================================
-# PLOT 2: Bias raster maps  (2 columns x 2 rows)
-# ============================================================
-
-# Compute bias rasters (resampling AntAirICE onto each model's grid first)
-bias_list <- list(
-  list(r = hclim_mpi_ann  - align_to_model(AntAir_annual, hclim_mpi_ann),  label = "HCLIM-MPI-ESM1", season = "Annual"),
-  list(r = hclim_cesm_ann - align_to_model(AntAir_annual, hclim_cesm_ann), label = "HCLIM-CESM2",    season = "Annual"),
-  list(r = hclim_mpi_sum  - align_to_model(AntAir_summer, hclim_mpi_sum),  label = "HCLIM-MPI-ESM1", season = "Summer"),
-  list(r = hclim_cesm_sum - align_to_model(AntAir_summer, hclim_cesm_sum), label = "HCLIM-CESM2",    season = "Summer")
-)
-
-# Convert each bias raster to a dataframe
-bias_df <- bind_rows(lapply(bias_list, function(b) {
-  df <- as.data.frame(b$r, xy = TRUE, na.rm = TRUE)
-  names(df)[3] <- "bias"
-  df$model  <- b$label
-  df$season <- b$season
-  df
-}))
-
-bias_df$model  <- factor(bias_df$model,  levels = model_labels)
-bias_df$season <- factor(bias_df$season, levels = c("Annual", "Summer"))
-
-# Symmetric colour scale
-bias_lim <- 10   # fixed ±10°C cap — colours use full red-blue range
-
-plot2 <- ggplot(bias_df, aes(x = x, y = y, fill = bias)) +
-  geom_tile() +
-  scale_fill_distiller(
-    palette  = "RdBu",
-    limits   = c(-bias_lim, bias_lim),
-    name     = "Bias (°C)\n(Model - AntAirICE)",
-    direction= -1,
-    na.value = NA,
-    oob      = scales::squish
-  ) +
-  coord_fixed() +
-  facet_grid(season ~ model) +
-  labs(
-    title = "Temperature bias: HCLIM - AntAirICE",
-    x     = "Longitude",
-    y     = "Latitude"
-  ) +
-  theme_classic(base_size = 9) +
-  theme(
-    strip.background  = element_blank(),
-    strip.text        = element_text(face = "bold", size = 9),
-    legend.position   = "right",
-    legend.key.height = unit(2, "cm"),
-    legend.key.width  = unit(0.4, "cm"),
-    panel.spacing     = unit(0.3, "cm"),
-    plot.title        = element_text(face = "bold", size = 11, hjust = 0.5),
-    axis.text         = element_text(size = 7),
-    axis.title        = element_text(size = 8),
-    panel.border      = element_rect(colour = "grey70", fill = NA, linewidth = 0.3)
-  )
-
-ggsave(
-  file.path(outpath, "AntAirICE_vs_HCLIM_bias_maps.png"),
-  plot2,
-  width  = 9,
-  height = 7,
-  dpi    = 300,
-  bg     = "white"
-)
-message("Plot 2 saved.")
-
-
-
-
-# ---------------------------------------------------------------
-
-
-library(terra)
-library(ggplot2)
-library(tidyr)
-library(dplyr)
-library(patchwork)
-library(here)
-library(viridis)
-
-
-
-# OUTPATH -----------------------------------------------------------------
-
-outpath <- here("Plots/Evaluation_AntAirICE")
-
-
-# ============================================================
-# HELPER: extract non-NA paired values from two rasters
-# ============================================================
-extract_pairs <- function(ref, mod, label) {
-  vals <- data.frame(
-    x = as.vector(values(ref)),
-    y = as.vector(values(mod))
-  )
-  vals <- vals[complete.cases(vals), ]
-  vals$model <- label
-  vals
-}
-
-# ============================================================
-# LOAD DATA
-# ============================================================
-AntAir_annual <- rast(here("Data/Environmental_predictors/Mean_Annual_Temp_ICEFREE.tif"))
-AntAir_summer <- rast(here("Data/Environmental_predictors/Mean_Summer_Temp_ICEFREE.tif"))
-
-# --- Annual model rasters ---
-#racmo_mpi_ann   <- rast(here("Data/Environmental_predictors/PolarRes26/RACMO_MPI_ESM1/Validation/Mean_Annual_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-#racmo_cesm2_ann <- rast(here("Data/Environmental_predictors/PolarRes26/RACMO_CESM2/Validation/Mean_Annual_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-hclim_mpi_ann <- rast(here("Data/Environmental_predictors/PolarRes26/Regridded/HCLIM_MPI_ESM1/Mean_Annual_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-hclim_cesm_ann<- rast(here("Data/Environmental_predictors/PolarRes26/Regridded/HCLIM_CESM2/Mean_Annual_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-
-# --- Summer model rasters ---
-# racmo_mpi_sum   <- rast(here("Data/Environmental_predictors/PolarRes26/Regridded/RACMO_MPI_ESM/Mean_Summer_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-# racmo_cesm2_sum <- rast(here("Data/Environmental_predictors/PolarRes26/Regridded/RACMO_CESM2/Mean_Summer_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-hclim_mpi_sum <- rast(here("Data/Environmental_predictors/PolarRes26/Regridded/HCLIM_MPI_ESM1/Mean_Summer_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-hclim_cesm_sum<- rast(here("Data/Environmental_predictors/PolarRes26/Regridded/HCLIM_CESM2/Mean_Summer_Temperature_HISTORICAL_1995_2014_ICEFREE.tif"))
-
-# ============================================================
-# PLOT 1: Scatter-density panels  (AntAirICE vs each model)
-# ============================================================
-
-# Build paired dataframes
-# model_labels <- c("MAR-MPI-ESM", "MAR-CESM2", "HCLIM-MPI-ESM1", "HCLIM-CESM2")
-model_labels <- c("HCLIM-MPI-ESM1", "HCLIM-CESM2")
-
-ann_pairs <- bind_rows(
-  extract_pairs(AntAir_annual, racmo_mpi_ann,   "MAR-MPI-ESM"),
-  extract_pairs(AntAir_annual, racmo_cesm2_ann, "MAR-CESM2"),
-  extract_pairs(AntAir_annual, hclim_mpi_ann, "HCLIM-MPI-ESM1"),
-  extract_pairs(AntAir_annual, hclim_cesm_ann,"HCLIM-CESM2")
-)
-ann_pairs$model <- factor(ann_pairs$model, levels = model_labels)
-
-sum_pairs <- bind_rows(
-  extract_pairs(AntAir_summer, racmo_mpi_sum,   "MAR-MPI-ESM"),
-  extract_pairs(AntAir_summer, racmo_cesm2_sum, "MAR-CESM2"),
-  extract_pairs(AntAir_summer, hclim_mpi_sum, "HCLIM-MPI-ESM1"),
-  extract_pairs(AntAir_summer, hclim_cesm_sum,"HCLIM-CESM2")
-)
-sum_pairs$model <- factor(sum_pairs$model, levels = model_labels)
-
-# Shared axis limits (use full combined range)
-all_vals <- c(ann_pairs$x, ann_pairs$y, sum_pairs$x, sum_pairs$y)
-ax_lim <- range(all_vals, na.rm = TRUE)
-
-# Function to build one faceted scatter-density row
-scatter_density_row <- function(df, row_title) {
-  ggplot(df, aes(x = x, y = y)) +
-    stat_bin2d(bins = 150, aes(fill = after_stat(count))) +
-    geom_abline(slope = 1, intercept = 0, colour = "red", linewidth = 0.5) +
-    scale_fill_viridis_c(
-      option  = "plasma",
-      name    = "Number of\ngrid cells",
-      trans   = "sqrt",          # sqrt compression like the reference
-      limits  = c(1, NA),
-      na.value= NA
-    ) +
-    scale_x_continuous(limits = ax_lim, breaks = seq(-30, 10, 10)) +
-    scale_y_continuous(limits = ax_lim, breaks = seq(-30, 10, 10)) +
-    coord_fixed() +
-    facet_wrap(~ model, nrow = 1, strip.position = "top") +
-    labs(
-      x    = "Temperature (AntAirICE) [°C]",
-      y    = paste0("Temperature (Model) [°C]"),
-      title= row_title
-    ) +
-    theme_classic(base_size = 9) +
-    theme(
-      strip.background  = element_blank(),
-      strip.text        = element_text(face = "bold", size = 9),
-      legend.position   = "right",
-      legend.key.height = unit(1.8, "cm"),
-      legend.key.width  = unit(0.35, "cm"),
-      panel.spacing     = unit(0.4, "cm"),
-      plot.title        = element_text(face = "bold", size = 10, hjust = 0.5),
-      axis.title.y      = element_text(size = 8),
-      axis.title.x      = element_text(size = 8)
-    )
-}
-
-p_ann <- scatter_density_row(ann_pairs, "Mean annual temperature")
-p_sum <- scatter_density_row(sum_pairs, "Mean summer temperature")
-
-plot1 <- p_ann / p_sum +
-  plot_annotation(
-    title   = "AntAirICE vs climate model temperatures",
-    theme   = theme(plot.title = element_text(face = "bold", size = 11, hjust = 0.5))
-  )
-
-ggsave(
-  file.path(outpath, "AntAirICE_vs_PolarRES_scatter_density.png"),
-  plot1,
-  width  = 14,
-  height = 7,
-  dpi    = 300,
-  bg     = "white"
-)
-message("Plot 1 saved.")
-
-# ============================================================
-# PLOT 2: Bias raster maps  (4 columns x 2 rows)
-# ============================================================
-
-# Compute bias rasters
-bias_list <- list(
-  list(r = racmo_mpi_ann - AntAir_annual,    label = "MAR-MPI-ESM",    season = "Annual"),
-  list(r = racmo_cesm2_ann - AntAir_annual,  label = "MAR-CESM2",      season = "Annual"),
-  list(r = hclim_mpi_ann - AntAir_annual,  label = "HCLIM-MPI-ESM1", season = "Annual"),
-  list(r = hclim_cesm_ann - AntAir_annual, label = "HCLIM-CESM2",    season = "Annual"),
-  list(r = racmo_mpi_sum - AntAir_summer,    label = "MAR-MPI-ESM",    season = "Summer"),
-  list(r = racmo_cesm2_sum - AntAir_summer,  label = "MAR-CESM2",      season = "Summer"),
-  list(r = hclim_mpi_sum - AntAir_summer,  label = "HCLIM-MPI-ESM1", season = "Summer"),
-  list(r = hclim_cesm_sum - AntAir_summer, label = "HCLIM-CESM2",    season = "Summer")
-)
-
-# Convert each bias raster to a dataframe
-bias_df <- bind_rows(lapply(bias_list, function(b) {
-  df <- as.data.frame(b$r, xy = TRUE, na.rm = TRUE)
-  names(df)[3] <- "bias"
-  df$model  <- b$label
-  df$season <- b$season
-  df
-}))
-
-bias_df$model  <- factor(bias_df$model,  levels = model_labels)
-bias_df$season <- factor(bias_df$season, levels = c("Annual", "Summer"))
-
-# Symmetric colour scale
-# OPTIONAL LIMIT TO 10 DEGREES
-# bias_lim <- max(abs(bias_df$bias), na.rm = TRUE)
-# bias_lim <- ceiling(bias_lim)               # round up to nearest integer
-bias_lim <- 10   # fixed ±10°C cap — colours use full red-blue range
-
-plot2 <- ggplot(bias_df, aes(x = x, y = y, fill = bias)) +
-  geom_tile() +
-  scale_fill_distiller(
-    palette  = "RdBu",
-    limits   = c(-bias_lim, bias_lim),
-    name     = "Bias (°C)\n(Model - AntAirICE)",
-    direction= -1,
-    na.value = NA,
-    oob      = scales::squish      # <-- add this line
-  ) +
-  coord_fixed() +
-  facet_grid(season ~ model) +
-  labs(
-    title = "Temperature bias: Climate model - AntAirICE",
-    x     = "Longitude",
-    y     = "Latitude"
-  ) +
-  theme_classic(base_size = 9) +
-  theme(
-    strip.background  = element_blank(),
-    strip.text        = element_text(face = "bold", size = 9),
-    legend.position   = "right",
-    legend.key.height = unit(2, "cm"),
-    legend.key.width  = unit(0.4, "cm"),
-    panel.spacing     = unit(0.3, "cm"),
-    plot.title        = element_text(face = "bold", size = 11, hjust = 0.5),
-    axis.text         = element_text(size = 7),
-    axis.title        = element_text(size = 8),
-    panel.border      = element_rect(colour = "grey70", fill = NA, linewidth = 0.3)
-  )
-
-ggsave(
-  file.path(outpath, "AntAirICE_vs_PolarRES_bias_maps.png"),
-  plot2,
-  width  = 14,
-  height = 7,
-  dpi    = 300,
-  bg     = "white"
-)
-message("Plot 2 saved.")

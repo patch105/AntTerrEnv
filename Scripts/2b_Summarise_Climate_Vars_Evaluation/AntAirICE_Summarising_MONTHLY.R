@@ -39,7 +39,7 @@ period_range <- paste(min(years_eval), max(years_eval), sep = "_")
 min_coverage_frac <- 0.5
 
 data_dir <- here("Data/AntAirICE")
-outpath  <- here("Data/AntAirICE/Summarised/comparison")
+outpath  <- here("Data/AntAirICE/comparison")
 dir.create(outpath, recursive = TRUE, showWarnings = FALSE)
 
 # ---- 2. File discovery & date parsing --------------------------------------
