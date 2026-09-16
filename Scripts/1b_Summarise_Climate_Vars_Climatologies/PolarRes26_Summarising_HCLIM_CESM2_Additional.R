@@ -152,28 +152,35 @@ load_variable_series_monthly_chunks <- function(dir, variable_name, scenario) {
   
   for (f in files) {
     
-    r <- rast(f)
-    dates <- as.Date(terra::time(r))
+    layers <- tryCatch({
+      
+      r <- rast(f)
+      dates <- as.Date(terra::time(r))
+      
+      if (length(dates) != terra::nlyr(r) || anyNA(dates)) {
+        stop("unreadable/inconsistent time dimension")
+      }
+      
+      # This file's "own" calendar month = the month of its FIRST layer. Any
+      # trailing layer(s) dated into the following month are the spillover
+      # and get dropped here.
+      own_year  <- lubridate::year(dates[1])
+      own_month <- lubridate::month(dates[1])
+      keep <- lubridate::year(dates) == own_year & lubridate::month(dates) == own_month
+      
+      if (!any(keep)) stop("no layers within its own month")
+      
+      list(r = r[[which(keep)]], dates = dates[keep])
+      
+    }, error = function(e) {
+      warning(sprintf("Skipping corrupt/unreadable file (%s):\n  %s", conditionMessage(e), f))
+      NULL
+    })
     
-    if (length(dates) != terra::nlyr(r) || anyNA(dates)) {
-      stop(sprintf("Could not read a clean time dimension from file:\n  %s\n", f),
-           "Re-check this file's CF time metadata before trusting this run.")
-    }
+    if (is.null(layers)) next
     
-    # This file's "own" calendar month = the month of its FIRST layer. Any
-    # trailing layer(s) dated into the following month are the spillover
-    # and get dropped here.
-    own_year  <- lubridate::year(dates[1])
-    own_month <- lubridate::month(dates[1])
-    keep <- lubridate::year(dates) == own_year & lubridate::month(dates) == own_month
-    
-    if (!any(keep)) {
-      warning(sprintf("File contributed no layers within its own month -- check:\n  %s", f))
-      next
-    }
-    
-    all_r[[length(all_r) + 1]] <- r[[which(keep)]]
-    all_dates <- c(all_dates, dates[keep])
+    all_r[[length(all_r) + 1]] <- layers$r
+    all_dates <- c(all_dates, layers$dates)
   }
   
   if (length(all_r) == 0) {
