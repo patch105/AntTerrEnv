@@ -37,9 +37,12 @@ job_index    <- as.integer(args[1])
 variables <- list("temp", "total_DD_minus5", "total_DD_0", "wind", "sea_ice",
                   "total_precip", "total_summer_precip", "mean_precip",
                   "mean_summer_precip", "solar_rad_down", "solar_rad_net","mean_melt", "total_melt",
-                  "mean_snow", "mean_hurs", "vpd", "temp_min", "temp_max")
+                  "mean_snow", "mean_hurs", "vpd", "temp_min", "temp_max",
+                  "total_solar_rad_down", "total_solar_rad_net")
 # temp_minmax added at the END (not alphabetically/logically placed) so it
 # doesn't shift the job_index of every variable after it in job_table.
+# total_solar_rad_down / total_solar_rad_net added the same way, at the very
+# end, for the same reason -- do not reorder this list.
 
 
 
@@ -226,9 +229,9 @@ annual_mean_from_monthly <- function(monthly_list) {
 # separately-computed daily/annual mean. Nothing to change there.
 
 # Sum (not mean) of a 12-month climatology list -- used for the "total"
-# variables (total_DD, total_precip, total_melt) so their annual figure is
-# a true Jan-Dec sum of the monthly climatological totals, rather than an
-# average of them.
+# variables (total_DD, total_precip, total_melt, total_solar_rad_down,
+# total_solar_rad_net) so their annual figure is a true Jan-Dec sum of the
+# monthly climatological totals, rather than an average of them.
 annual_total_from_monthly <- function(monthly_list) {
   app(rast(monthly_list), sum, na.rm = TRUE)
 }
@@ -255,10 +258,10 @@ seasonal_total_from_monthly <- function(monthly_list, months) {
 # Per-year monthly TOTAL for one (month, year) combination, averaged
 # across years -- the "total" counterpart to climatological_monthly_mean()
 # above. This is what lets the accumulation/total-style variables
-# (degree-days, melt, precip) be built the same way as the mean-style ones:
-# 12 climatological monthly figures (here, monthly SUMS rather than monthly
-# MEANS), saved individually, then combined with annual_mean_from_monthly()
-# for the annual figure.
+# (degree-days, melt, precip, solar rad) be built the same way as the
+# mean-style ones: 12 climatological monthly figures (here, monthly SUMS
+# rather than monthly MEANS), saved individually, then combined with
+# annual_total_from_monthly() for the annual figure.
 climatological_monthly_sum <- function(r, dates, month, years, transform = NULL) {
   yearly <- list()
   for (y in years) {
@@ -289,10 +292,12 @@ climatological_monthly_sums_all <- function(r, dates, years, transform = NULL) {
 
 # ---- 4. Unit-conversion helpers --------------------------------------------------
 # DIAGNOSTICS ASSUMED: units match what Script 1's variable_summary CSV said
-# matched the old scripts' expectations (K for temp, kg m-2 s-1 flux for pr).
+# matched the old scripts' expectations (K for temp, kg m-2 s-1 flux for pr,
+# W m-2 for rsds/rsus).
 
 to_celsius <- function(r) r - 273.15 # K to celcius
 flux_to_mm <- function(r) r * 86400 # Daily flux to daily mm by multiplying by seconds
+to_MJ <- function(r) r * 0.0864 # W m-2 -> MJ m-2 day-1 (multiply by 86400 s/day, then 1e-6 J->MJ)
 
 # ---- 5. Output writing -----------------------------------------------------------
 # Every result is written to disk as soon as it's computed, rather than
@@ -569,7 +574,10 @@ if (variable == "mean_summer_precip") {
   }
 }
 
-# ---- 6a. SOLAR RADIATION NET (net SW = rsds - rsus, W m-2, no conversion) ------------
+# ---- 6a. SOLAR RADIATION NET, MEAN (net SW = rsds - rsus, W m-2 -> MJ m-2 day-1) --
+# Converted to MJ m-2 day-1 (x 0.0864) after differencing rsds - rsus; since
+# the conversion is just a scalar multiply, doing it before or after the
+# subtraction gives the same result.
 if (variable == "solar_rad_net") {
   
   for (period_name in names(periods)) {
@@ -594,7 +602,7 @@ if (variable == "solar_rad_net") {
     rsds_r <- rsds$r[[match(common_dates, rsds$dates)]]
     rsus_r <- rsus$r[[match(common_dates, rsus$dates)]]
     
-    swnet_r <- rsds_r - rsus_r
+    swnet_r <- to_MJ(rsds_r - rsus_r)
     
     monthly <- climatological_monthly_means_all(swnet_r, common_dates, p$years)
     for (m in 1:12) {
@@ -607,7 +615,7 @@ if (variable == "solar_rad_net") {
 }
 
 
-# ---- 6b. SOLAR RADIATION DOWNWELLING (just rsds, W m-2, no conversion) ------------
+# ---- 6b. SOLAR RADIATION DOWNWELLING, MEAN (rsds, W m-2 -> MJ m-2 day-1) --------
 
 if (variable == "solar_rad_down") {
   
@@ -616,8 +624,9 @@ if (variable == "solar_rad_down") {
     message("-- solar_rad_down: ", period_name)
     
     rsds <- load_variable_series(model_dir, "rsds", p$scenario)
+    rsds_MJ <- to_MJ(rsds$r)
     
-    monthly <- climatological_monthly_means_all(rsds$r, rsds$dates, p$years)
+    monthly <- climatological_monthly_means_all(rsds_MJ, rsds$dates, p$years)
     for (m in 1:12) {
       save_raster(monthly[[m]], sprintf("Climatological_Monthly_Mean_Downwelling_Solar_Radiation_%s_%s_%s.tif",
                                         month.name[m], period_name, p$range))
@@ -627,9 +636,67 @@ if (variable == "solar_rad_down") {
   }
 }  
 
+# ---- 6c. SOLAR RADIATION DOWNWELLING, TOTAL (rsds, W m-2 -> MJ m-2 day-1) -------
+# Same method as total_precip: 12 climatological monthly TOTALS (via
+# climatological_monthly_sums_all(), with the MJ conversion applied inside
+# as the `transform`), saved individually, then summed into an annual total.
+if (variable == "total_solar_rad_down") {
   
+  for (period_name in names(periods)) {
+    p <- periods[[period_name]]
+    message("-- total_solar_rad_down: ", period_name)
+    
+    rsds <- load_variable_series(model_dir, "rsds", p$scenario)
+    
+    monthly <- climatological_monthly_sums_all(rsds$r, rsds$dates, p$years, transform = to_MJ)
+    for (m in 1:12) {
+      save_raster(monthly[[m]], sprintf("Climatological_Monthly_Total_Downwelling_Solar_Radiation_%s_%s_%s.tif",
+                                        month.name[m], period_name, p$range))
+    }
+    total <- annual_total_from_monthly(monthly)
+    save_raster(total, sprintf("Total_Annual_Downwelling_Solar_Radiation_%s_%s.tif", period_name, p$range))
+  }
+}
+
+# ---- 6d. SOLAR RADIATION NET, TOTAL (net SW = rsds - rsus, W m-2 -> MJ m-2 day-1) --
+# Same date-alignment handling as solar_rad_net (6a) -- rsus has a gap that
+# rsds doesn't, so both series are restricted to their common dates before
+# differencing. The MJ conversion is then applied as the `transform` inside
+# climatological_monthly_sums_all(), same method as total_precip.
+if (variable == "total_solar_rad_net") {
+  
+  for (period_name in names(periods)) {
+    p <- periods[[period_name]]
+    message("-- total_solar_rad_net: ", period_name)
+    
+    rsds <- load_variable_series(model_dir, "rsds", p$scenario)
+    rsus <- load_variable_series(model_dir, "rsus", p$scenario)
+    
+    common_dates <- as.Date(intersect(rsds$dates, rsus$dates), origin = "1970-01-01")
+    
+    if (length(common_dates) == 0) {
+      stop("rsds and rsus share no common dates for ", model, " / ", p$scenario)
+    }
+    
+    rsds_r <- rsds$r[[match(common_dates, rsds$dates)]]
+    rsus_r <- rsus$r[[match(common_dates, rsus$dates)]]
+    
+    swnet_r <- rsds_r - rsus_r
+    
+    monthly <- climatological_monthly_sums_all(swnet_r, common_dates, p$years, transform = to_MJ)
+    for (m in 1:12) {
+      save_raster(monthly[[m]], sprintf("Climatological_Monthly_Total_Net_Solar_Radiation_%s_%s_%s.tif",
+                                        month.name[m], period_name, p$range))
+    }
+    total <- annual_total_from_monthly(monthly)
+    save_raster(total, sprintf("Total_Annual_Net_Solar_Radiation_%s_%s.tif", period_name, p$range))
+  }
+}
+
+
 # ---- 7. MEAN & TOTAL SNOW MELT (snm, converted to mm like precipitation) -------
 # Mass of ice/snow melted at the surface per second (magnitude of melt)
+if (variable == "mean_melt") {
   
   for (period_name in names(periods)) {
     p <- periods[[period_name]]
