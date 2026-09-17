@@ -72,7 +72,11 @@ years_future <- seq(2081, 2100, by = 1)
 args <- commandArgs(trailingOnly = TRUE)
 job_index <- as.integer(args[1])
 
-variables <- list("sea_ice", "solar_rad_net", "mean_melt", "total_melt", "mean_snow")
+variables <- list("sea_ice", "solar_rad_net", "mean_melt", "total_melt", "mean_snow",
+                  "total_solar_rad_net")
+# total_solar_rad_net added at the END (not alongside solar_rad_net) so it
+# doesn't shift the job_index of every variable after it in variables --
+# same convention Script 2 uses for its own late additions.
 variable  <- variables[[job_index]]
 message("Job ", job_index, " -> Model: ", model, " | Variable: ", variable)
 
@@ -293,6 +297,7 @@ climatological_monthly_sums_all <- function(r, dates, years, transform = NULL) {
 # ---- 4. Unit-conversion helpers (identical to Script 2) --------------------------
 
 flux_to_mm <- function(r) r * 86400  # daily flux (kg m-2 s-1) to daily mm
+to_MJ      <- function(r) r * 0.0864 # W m-2 -> MJ m-2 day-1 (multiply by 86400 s/day, then 1e-6 J->MJ)
 
 # ---- 5. Output writing (identical to Script 2) ------------------------------------
 
@@ -328,12 +333,14 @@ if (variable == "sea_ice") {
   }
 }
 
-# ---- SOLAR RADIATION NET (net SW = rsds - rsus, W m-2) ---------------------------
+# ---- SOLAR RADIATION NET, MEAN (net SW = rsds - rsus, W m-2 -> MJ m-2 day-1) -----
 # rsds loads the normal (continuous-file) way, exactly as in Script 2.
 # rsus loads via the monthly-chunk loader -- the MPI_ESM1 Script 1 source
 # never trims a last layer for rsus (same as CESM2's "doesn't appear to
 # actually hold that day in it"), which the generic date-filter already
-# handles correctly with no changes needed.
+# handles correctly with no changes needed. The MJ conversion (x 0.0864) is
+# applied after differencing rsds - rsus; since it's just a scalar
+# multiply, doing it before or after the subtraction gives the same result.
 if (variable == "solar_rad_net") {
   
   for (period_name in names(periods)) {
@@ -352,7 +359,7 @@ if (variable == "solar_rad_net") {
     rsds_r <- rsds$r[[match(common_dates, rsds$dates)]]
     rsus_r <- rsus$r[[match(common_dates, rsus$dates)]]
     
-    swnet_r <- rsds_r - rsus_r
+    swnet_r <- to_MJ(rsds_r - rsus_r)
     
     monthly <- climatological_monthly_means_all(swnet_r, common_dates, p$years)
     for (m in 1:12) {
@@ -361,6 +368,43 @@ if (variable == "solar_rad_net") {
     }
     annual <- annual_mean_from_monthly(monthly)
     save_raster(annual, sprintf("Mean_Annual_Net_Solar_Radiation_%s_%s.tif", period_name, p$range))
+  }
+}
+
+# ---- SOLAR RADIATION NET, TOTAL (net SW = rsds - rsus, W m-2 -> MJ m-2 day-1) ----
+# Same rsds/rsus loading and date-alignment handling as solar_rad_net above
+# (rsds via the standard continuous loader, rsus via the monthly-chunk
+# loader, with the MPI_ESM1 source's un-trimmed rsus files handled correctly
+# by the same generic date-filter as always). The MJ conversion is then
+# applied as the `transform` inside climatological_monthly_sums_all(), same
+# method Script 2 uses for total_precip / total_solar_rad_net.
+if (variable == "total_solar_rad_net") {
+  
+  for (period_name in names(periods)) {
+    p <- periods[[period_name]]
+    message("-- total_solar_rad_net: ", period_name)
+    
+    rsds <- load_variable_series(model_dir, "rsds", p$scenario)
+    rsus <- load_variable_series_monthly_chunks(additional_dir, "rsus", p$scenario)
+    report_missing_year_months(rsus$dates, p$years, "rsus", p$scenario)
+    
+    common_dates <- as.Date(intersect(rsds$dates, rsus$dates), origin = "1970-01-01")
+    if (length(common_dates) == 0) {
+      stop("rsds and rsus share no common dates for ", model, " / ", p$scenario)
+    }
+    
+    rsds_r <- rsds$r[[match(common_dates, rsds$dates)]]
+    rsus_r <- rsus$r[[match(common_dates, rsus$dates)]]
+    
+    swnet_r <- rsds_r - rsus_r
+    
+    monthly <- climatological_monthly_sums_all(swnet_r, common_dates, p$years, transform = to_MJ)
+    for (m in 1:12) {
+      save_raster(monthly[[m]], sprintf("Climatological_Monthly_Total_Net_Solar_Radiation_%s_%s_%s.tif",
+                                        month.name[m], period_name, p$range))
+    }
+    total <- annual_total_from_monthly(monthly)
+    save_raster(total, sprintf("Total_Annual_Net_Solar_Radiation_%s_%s.tif", period_name, p$range))
   }
 }
 
