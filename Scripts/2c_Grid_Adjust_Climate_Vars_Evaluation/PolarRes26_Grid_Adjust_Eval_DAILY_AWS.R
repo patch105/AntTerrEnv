@@ -27,15 +27,13 @@
 # a one-row-per-station diagnostic of distance from the station's true
 # EPSG:3031 location to the centre of the nearest cell actually used.
 #
-# CALENDAR: RACMO_CESM2 specifically uses a 365-day (no-leap) calendar;
-# every other job (including the other RACMO driving-GCM combinations,
-# HCLIM, and MetUM) uses the standard Gregorian calendar. Rather than trust
-# whatever time metadata survives Script 2's GeoTIFF write/read round-trip
-# (custom calendars are exactly the kind of thing that can silently
-# misdecode via GDAL's generic TIFF time tag), dates are always
-# reconstructed explicitly per model, and the layer count is checked
-# against the calendar-specific expected day count before trusting the
-# reconstruction.
+# DATES: per-layer dates are read from terra's embedded time metadata
+# (terra::time(r)) rather than reconstructed from a calendar assumption or
+# inferred from layer names -- layer names turned out not to be reliable
+# position indicators (they don't consistently restart per source file),
+# so name-based or calendar-guessed dates would risk silently mismatching
+# the true layer order. The embedded timestamps are validated (present,
+# no NAs, no duplicates, ascending) before being trusted.
 #
 # ELEVATION / LAPSE-RATE CORRECTION (tas only): modelled near-surface
 # temperature at the nearest grid cell is corrected for the difference
@@ -206,38 +204,54 @@ if (is.na(crs(r)) || crs(r) == "") {
   }
 }
 
-# ---- 4. Recover per-layer dates, calendar-aware ----------------------------------
-# Script 2 saves one layer per day for the full historical window with no
-# gaps/duplicates (same guarantee load_variable_series() relies on). Dates
-# are always reconstructed explicitly from the model's known calendar
-# (rather than trusting whatever time metadata survived the GeoTIFF
-# write/read round-trip), because a no-leap calendar decoded as if it were
-# standard Gregorian would silently drift by a day at every leap year.
+# ---- 4. Recover per-layer dates from embedded timestamps -----------------------
+# Trust terra's embedded per-layer time metadata (terra::time(r)) rather
+# than reconstructing dates from a calendar assumption. Layer NAMES turned
+# out not to be reliably file-local (e.g. names starting "tas_1462" rather
+# than restarting at 1), so there's no safe way to infer position from
+# name -- but time() is a separate per-layer attribute, independent of
+# names, and is exactly what load_variable_series() in Script 2 read from
+# the source netCDFs and sorted by before writing. We just need to confirm
+# it survived the GeoTIFF write/read round-trip intact.
 
-build_calendar_dates <- function(years, calendar) {
-  full <- seq(as.Date(paste0(min(years), "-01-01")),
-              as.Date(paste0(max(years), "-12-31")), by = "day")
-  if (calendar == "365_day") {
-    full <- full[format(full, "%m-%d") != "02-29"]
-  }
-  full
-}
-
-# Only RACMO_CESM2 is currently known to use a no-leap calendar (the other
-# RACMO driving-GCM combinations use standard Gregorian) -- everything else
-# is assumed standard unless/until another specific model turns out to
-# need its own entry here.
-calendar <- if (model == "RACMO_CESM2") "365_day" else "standard"
-dates <- build_calendar_dates(years_hist, calendar)
+dates <- as.Date(terra::time(r))
 
 if (length(dates) != nlyr(r)) {
-  stop("Layer count (", nlyr(r), ") does not match the expected ", calendar,
-       "-calendar day count (", length(dates), ") for ", hist_range,
-       ". Input: ", input_path,
-       " -- check whether this model's calendar assumption is still correct.")
+  stop("terra::time(r) returned ", length(dates), " timestamps but the ",
+       "raster has ", nlyr(r), " layers -- time metadata did not survive ",
+       "the GeoTIFF round-trip for: ", input_path)
+}
+if (anyNA(dates)) {
+  stop("terra::time(r) contains NA timestamp(s) for: ", input_path,
+       " -- time metadata did not survive the GeoTIFF round-trip.")
+}
+if (any(duplicated(dates))) {
+  stop("terra::time(r) contains duplicate dates for: ", input_path)
+}
+if (!identical(dates, sort(dates))) {
+  stop("terra::time(r) dates are not in ascending order for: ", input_path,
+       " -- layer order and date order have come apart.")
 }
 
-message("  calendar: ", calendar, " (", length(dates), " days)")
+# Informational cross-check only (never fails the job): does the embedded
+# day count match what we'd expect under the calendar we believe this
+# model uses? A mismatch here is worth a look, but the embedded timestamps
+# -- not this assumption -- are what the rest of the script trusts.
+calendar_guess <- if (model == "RACMO_CESM2") "365_day" else "standard"
+expected_n <- if (calendar_guess == "365_day") {
+  length(years_hist) * 365
+} else {
+  as.integer(as.Date(paste0(max(years_hist), "-12-31")) -
+               as.Date(paste0(min(years_hist), "-01-01"))) + 1
+}
+if (length(dates) != expected_n) {
+  message("  note: embedded day count (", length(dates), ") differs from the ",
+          calendar_guess, "-calendar expectation (", expected_n, ") for ",
+          hist_range, " -- proceeding on the embedded timestamps regardless.")
+}
+
+message("  using embedded timestamps: ", length(dates), " days, ",
+        dates[1], " to ", dates[length(dates)])
 
 # ---- 5. Load qualifying station points and reproject them into the model's CRS --
 # Reprojecting ~a few dozen points is essentially free; this is what lets us
@@ -251,10 +265,31 @@ stopifnot(nrow(stations) == nrow(stations_native))
 # ---- 6. Extract the nearest cell's full daily series per station ----------------
 
 ext_vals <- terra::extract(r, stations_native, cells = TRUE, method = "simple")
-# ext_vals: ID, cell, <one column per layer>
+# ext_vals column order is ID, <layer 1>, <layer 2>, ..., cell -- "cell" is
+# appended at the END by terra::extract(), NOT placed right after "ID".
+# Locate ID and cell explicitly by name (the only two guaranteed-unique
+# names in this data frame) rather than assuming a fixed position.
+#
+# IMPORTANT: layer columns are NOT selected by name. Layer names are not a
+# reliable position indicator here (they don't consistently restart per
+# source file), so name-based operations (setdiff(), all_of(), match())
+# would risk silently collapsing or misassigning columns. Column POSITION
+# is what's reliable -- it matches layer order in `r`, which is what
+# `dates` (read from embedded time metadata in Section 4) is indexed by --
+# so we index by position throughout instead of by name.
 
-value_cols <- setdiff(names(ext_vals), c("ID", "cell"))
-stopifnot(length(value_cols) == nlyr(r))
+id_idx   <- which(names(ext_vals) == "ID")
+cell_idx <- which(names(ext_vals) == "cell")
+stopifnot(length(id_idx) == 1, length(cell_idx) == 1)
+
+layer_positions <- setdiff(seq_len(ncol(ext_vals)), c(id_idx, cell_idx))
+stopifnot(length(layer_positions) == nlyr(r))
+
+# Overwrite with guaranteed-unique placeholder names so pivot_longer has
+# something unambiguous to work with; the real date for each comes from
+# `dates` by POSITION (layer_1 <-> dates[1], etc.), never by matching name.
+value_cols <- paste0("layer_", seq_along(layer_positions))
+names(ext_vals)[layer_positions] <- value_cols
 
 zhandian_vec <- as.character(stations$zhandian)
 
@@ -262,10 +297,11 @@ long_df <- ext_vals %>%
   mutate(zhandian = zhandian_vec[ID]) %>%
   select(zhandian, cell, all_of(value_cols)) %>%
   tidyr::pivot_longer(cols = all_of(value_cols), names_to = "layer", values_to = "model_value") %>%
-  group_by(zhandian) %>%
-  mutate(date = dates[match(layer, value_cols)]) %>%
-  ungroup() %>%
   mutate(
+    # layer is "layer_<k>" by construction above, so its integer suffix is
+    # a direct, reliable position index into `dates` -- not a name match.
+    layer_pos = as.integer(str_remove(layer, "^layer_")),
+    date = dates[layer_pos],
     Year  = lubridate::year(date),
     Month = lubridate::month(date),
     Day   = lubridate::day(date),
