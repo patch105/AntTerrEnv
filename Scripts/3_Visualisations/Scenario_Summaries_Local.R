@@ -8,11 +8,10 @@
 #
 # One headline raster per variable family is used: whatever annual/seasonal
 # aggregate Step 2 already saves for that family (e.g. Mean_Annual_
-# Temperature). Three families -- TasMin, TasMax, and sea ice -- don't have
-# a saved annual aggregate (Step 2 only saves their monthly/seasonal
-# climatology files), so those are computed here as a mean across their
-# monthly files instead. Sea ice uses the plain (non-buffered) concentration,
-# averaged across its Oct-Feb season.
+# Temperature). Two families -- TasMin and TasMax -- don't have a saved
+# annual aggregate (Step 2 only saves their monthly/seasonal climatology
+# files), so those are computed here as a mean across their monthly files
+# instead.
 #
 # Ice-free masking is NOT done here -- it's already been applied upstream by
 # the Grid_adjust script, which regrids and masks everything onto the common
@@ -20,6 +19,13 @@
 # domain rasters are still loaded, but only as a sanity check that the grid
 # actually lines up (no resampling/regridding happens here -- if it doesn't
 # line up, this stops with an error rather than silently fixing it).
+#
+# NOTE: the solar radiation and sea ice concentration families are saved
+# with a different upstream mask suffix than the rest ("_COASTLINE" for
+# solar radiation, "_BUFFER_100km" / "_CONCENTRATION" for sea ice) rather
+# than "_ICEFREE", but are otherwise read the same way as any other direct
+# annual/seasonal variable -- no special-case averaging logic is needed for
+# them any more.
 #
 # ERA5-driven models (HCLIM_ERA5, RACMO_ERA5, MetUM_ERA5) only ever have a
 # HISTORICAL period -- same as in the Step 2/2b scripts -- so they
@@ -80,7 +86,9 @@ model_meta <- tibble(Model = models) %>%
 storyline_drivers <- c("CESM2", "MPI_ESM1")
 
 # ---- 2. Headline variable -> filename mapping ------------------------------
-# All filenames carry the "_ICEFREE" suffix Grid_adjust writes.
+# Most filenames carry the "_ICEFREE" suffix Grid_adjust writes. The solar
+# radiation and sea ice concentration families instead carry "_COASTLINE"
+# or "_BUFFER_100km" / "_CONCENTRATION" (see note in the header above).
 
 direct_variables <- list(
   AnnualTemp       = "Mean_Annual_Temperature_%s_%s_ICEFREE.tif",
@@ -93,14 +101,39 @@ direct_variables <- list(
   TotalSummerPrecip= "Mean_Total_Summer_Precipitation_%s_%s_ICEFREE.tif",
   MeanAnnualPrecip = "Mean_Annual_Precipitation_%s_%s_ICEFREE.tif",
   MeanSummerPrecip = "Mean_Summer_Precipitation_%s_%s_ICEFREE.tif",
-  SolarRad         = "Mean_Annual_Solar_Radiation_%s_%s_ICEFREE.tif",
-  MeanMelt         = "Mean_Annual_Melt_%s_%s_ICEFREE.tif",
-  TotalMelt        = "Mean_Total_Annual_Melt_%s_%s_ICEFREE.tif",
   SnowCover        = "Mean_Annual_Snow_Cover_%s_%s_ICEFREE.tif",
   SummerRelHumidity= "Mean_Summer_Relative_Humidity_%s_%s_ICEFREE.tif",
   WinterRelHumidity= "Mean_Winter_Relative_Humidity_%s_%s_ICEFREE.tif",
   RelHumidity      = "Mean_Annual_Relative_Humidity_%s_%s_ICEFREE.tif",
   VPD              = "Mean_Annual_VPD_%s_%s_ICEFREE.tif",
+  MeanMelt         = "Mean_Annual_Melt_%s_%s_ICEFREE.tif",
+  TotalMelt        = "Mean_Total_Annual_Melt_%s_%s_ICEFREE.tif",
+  
+  # -- Solar radiation (downwelling / net, mean / total, annual + seasonal)
+  #    -- saved with a "_COASTLINE" mask suffix rather than "_ICEFREE".
+  SolarRadDownwelling            = "Mean_Annual_Downwelling_Solar_Radiation_%s_%s_COASTLINE.tif",
+  SummerSolarRadDownwelling      = "Mean_Summer_Downwelling_Solar_Radiation_%s_%s_COASTLINE.tif",
+  WinterSolarRadDownwelling      = "Mean_Winter_Downwelling_Solar_Radiation_%s_%s_COASTLINE.tif",
+  SolarRadNet                    = "Mean_Annual_Net_Solar_Radiation_%s_%s_COASTLINE.tif",
+  SummerSolarRadNet              = "Mean_Summer_Net_Solar_Radiation_%s_%s_COASTLINE.tif",
+  WinterSolarRadNet              = "Mean_Winter_Net_Solar_Radiation_%s_%s_COASTLINE.tif",
+  TotalSolarRadDownwelling       = "Total_Annual_Downwelling_Solar_Radiation_%s_%s_COASTLINE.tif",
+  TotalSummerSolarRadDownwelling = "Total_Summer_Downwelling_Solar_Radiation_%s_%s_COASTLINE.tif",
+  TotalWinterSolarRadDownwelling = "Total_Winter_Downwelling_Solar_Radiation_%s_%s_COASTLINE.tif",
+  TotalSolarRadNet               = "Total_Annual_Net_Solar_Radiation_%s_%s_COASTLINE.tif",
+  TotalSummerSolarRadNet         = "Total_Summer_Net_Solar_Radiation_%s_%s_COASTLINE.tif",
+  TotalWinterSolarRadNet         = "Total_Winter_Net_Solar_Radiation_%s_%s_COASTLINE.tif",
+  
+  # -- Sea ice concentration (buffered 100km / plain concentration, annual +
+  #    seasonal) -- now read directly like every other family, no monthly
+  #    averaging or bespoke buffering logic required.
+  SeaIceConcBuffer         = "Mean_Annual_Sea_Ice_Concentration_%s_%s_BUFFER_100km.tif",
+  SummerSeaIceConcBuffer   = "Mean_Summer_Sea_Ice_Concentration_%s_%s_BUFFER_100km.tif",
+  WinterSeaIceConcBuffer   = "Mean_Winter_Sea_Ice_Concentration_%s_%s_BUFFER_100km.tif",
+  SeaIceConc               = "Mean_Annual_Sea_Ice_Concentration_%s_%s_CONCENTRATION.tif",
+  SummerSeaIceConc         = "Mean_Summer_Sea_Ice_Concentration_%s_%s_CONCENTRATION.tif",
+  WinterSeaIceConc         = "Mean_Winter_Sea_Ice_Concentration_%s_%s_CONCENTRATION.tif",
+  
   BIO1             = "BIO1_%s_%s_ICEFREE.tif",
   BIO2             = "BIO2_%s_%s_ICEFREE.tif",
   BIO3             = "BIO3_%s_%s_ICEFREE.tif",
@@ -130,11 +163,6 @@ monthly_mean_variables <- list(
   TasMax = "Climatological_Monthly_Mean_TasMax_%s_%s_%s_ICEFREE.tif"
 )
 
-# Sea ice: plain (non-buffered) concentration, averaged across its Oct-Feb
-# season -- the only months Step 2 computes for it.
-sea_ice_pattern <- "Mean_%s_Sea_Ice_Concentration_%s_%s_ICEFREE.tif"
-sea_ice_months  <- c("October", "November", "December", "January", "February")
-
 # ---- 3. Helpers -------------------------------------------------------------
 
 read_direct <- function(model_dir, pattern, period_name, range_label) {
@@ -146,12 +174,6 @@ read_direct <- function(model_dir, pattern, period_name, range_label) {
 read_monthly_mean <- function(model_dir, pattern, period_name, range_label) {
   paths <- file.path(model_dir, sprintf(pattern, month.name, period_name, range_label))
   if (any(!file.exists(paths))) { warning("Missing monthly file(s): ", pattern); return(NULL) }
-  app(rast(paths), mean, na.rm = TRUE)
-}
-
-read_sea_ice_mean <- function(model_dir, period_name, range_label) {
-  paths <- file.path(model_dir, sprintf(sea_ice_pattern, sea_ice_months, period_name, range_label))
-  if (any(!file.exists(paths))) { warning("Missing sea-ice monthly file(s) for ", period_name); return(NULL) }
   app(rast(paths), mean, na.rm = TRUE)
 }
 
@@ -218,8 +240,6 @@ model_dfs <- map(models, function(model) {
       r <- read_monthly_mean(model_dir, monthly_mean_variables[[cov]], period_name, range_label)
       if (!is.null(r)) layers[[cov]] <- r
     }
-    r_seaice <- read_sea_ice_mean(model_dir, period_name, range_label)
-    if (!is.null(r_seaice)) layers[["SeaIceConc"]] <- r_seaice
     
     if (length(layers) == 0) {
       message("     no files found -- skipping ", period_name)
@@ -318,4 +338,3 @@ for (period_label in unique(all_df$Period)) {
 }
 
 message("\nDone. Summary tables written to: ", outpath)
-
