@@ -144,7 +144,7 @@ Ant_extent <- vect(here("Data/PolarRes26/add_data_limit_v7.2.shp"))  # EPSG:3031
 coast      <- vect(here("Data/PolarRes26/add_coastline_high_res_polygon_v7_12.shp"))
 SG         <- vect(here("Data/PolarRes26/orkney.shp"))
 
-sea_ice_buffer_km <- c(2, 5, 10, 50, 100, 200)  # must match the buffer radii used in section 5e
+sea_ice_buffer_km <- c(15, 25, 50, 100, 200, 500)  # must match the buffer radii used in section 5e
 
 # If TRUE, skip an input file entirely (no reprojection/resampling work at
 # all) when every output it would produce already exists on disk. Set to
@@ -480,7 +480,7 @@ names(buffers) <- paste0(sea_ice_buffer_km, "km")
 # around every ice-free-land cell, and place it back onto the domain grid.
 extract_to_buffer <- function(conc_raster, domain, domain.pts, buffer_vect) {
   conc_raster <- ifel(is.na(conc_raster), 0, conc_raster)
-  extracted <- terra::extract(conc_raster, buffer_vect, fun = mean, na.rm = TRUE)
+  extracted <- terra::extract(conc_raster, buffer_vect, fun = mean, exact = T, na.rm = TRUE)
   extracted[is.na(extracted)] <- 0
   out <- domain
   values(out) <- NA
