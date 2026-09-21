@@ -9,14 +9,25 @@
 #                                    (FUTURE-period files only, saved as a
 #                                    separate, additional output)
 #
-# SEA ICE is a special case (see sections 5b-5e below): instead of the
+# SEA ICE is a special case (see sections 5b-5f below): instead of the
 # generic COASTLINE/ICEFREE/ICEFREE_FUTURE masks, every monthly sea-ice
-# climatology file gets three other products, produced on the same
-# reprojected/resampled grid, using the SAME historical/future ice-free-land
-# inputs as every other variable:
-#   - <name>_CONCENTRATION.tif   -- coast/SG masked, cropped to 60 deg S
-#   - <name>_BUFFER_<radius>.tif -- mean concentration within each buffer
-#                                   distance of every ice-free-land cell
+# climatology file gets four other products, produced on the same
+# reprojected/resampled grid, using the SAME ice-free-land inputs as every
+# other variable:
+#   - <name>_CONCENTRATION.tif        -- coast/SG masked, cropped to 60 deg S
+#   - <name>_BUFFER_<radius>.tif      -- mean concentration within each buffer
+#                                        distance of every ice-free-land cell
+#   - <name>_DIST_TO_OPEN_WATER.tif   -- distance (km) from the centre of every
+#                                        ice-free-land cell to the nearest
+#                                        open-water cell, i.e. the sea-ice
+#                                        edge (SIC < sea_ice_edge_thresh, 15%)
+#   - <name>_DIST_TO_SEA_ICE.tif      -- distance (km) from the centre of every
+#                                        ice-free-land cell to the nearest
+#                                        sea-ice cell (SIC >= 15%)
+#
+# Each sea-ice product is checked for existence independently (when
+# SKIP_EXISTING is TRUE), so adding a new product does not force the
+# (expensive) buffer products to be recomputed for files that already have them.
 #
 # For RACMO sea-ice files specifically, an extra landmask fix runs first
 # (section 5b): RACMO sea-ice output sits on a rotated-pole grid that comes
@@ -48,6 +59,11 @@
 # scan (e.g. if you haven't run list_pending_jobs.R, or want to force a
 # full rebuild/audit run). SKIP_EXISTING (section 4b) still applies either
 # way, as a safety net against a stale manifest.
+#
+# NOTE: list_pending_jobs.R must know about the two new sea-ice outputs
+# (_DIST_TO_OPEN_WATER.tif and _DIST_TO_SEA_ICE.tif). Until it does, its
+# manifest will not list sea-ice files that only lack these products --
+# run with USE_MANIFEST <- FALSE for the catch-up run.
 #
 # One job = one input file, selected via a single job_index (same pattern as
 # Script 2) -- run with no argument (or an out-of-range one) to print the
@@ -146,11 +162,17 @@ SG         <- vect(here("Data/PolarRes26/orkney.shp"))
 
 sea_ice_buffer_km <- c(15, 25, 50, 100, 200, 500)  # must match the buffer radii used in section 5e
 
+# Sea-ice edge threshold (% concentration). Cells < this are "open water"
+# (the sea-ice edge boundary, Ainley et al. 2010); cells >= this are "sea ice".
+sea_ice_edge_thresh <- 15
+
 # If TRUE, skip an input file entirely (no reprojection/resampling work at
 # all) when every output it would produce already exists on disk. Set to
 # FALSE to always reprocess and overwrite. Kept on even with USE_MANIFEST,
 # as a safety net in case the manifest is stale (e.g. some of its jobs were
 # already completed by a separate run after the manifest was written).
+# For sea ice this also applies per product (section 5e/5f): only missing
+# products are recomputed.
 SKIP_EXISTING <- TRUE
 
 # ---- 2. Build the job table ------------------------------------------------------
@@ -244,8 +266,8 @@ icefree_futurepath  <- file.path(out_dir, paste0(stem, "_ICEFREE_FUTURE.tif"))
 # Sea-ice detection only needs the filename, so it's done here (before any
 # raster is read) -- both to route to the right branch below and to know
 # which output paths to check for the skip-existing logic. Every monthly
-# sea-ice climatology file gets the concentration/buffer treatment, not
-# just a subset of months.
+# sea-ice climatology file gets the concentration/buffer/distance treatment,
+# not just a subset of months.
 is_sea_ice <- grepl("Sea_Ice_Concentration", filename, fixed = TRUE)
 
 # Period is also read off the filename. FUTURE-period files additionally
@@ -256,19 +278,25 @@ is_future <- grepl("_FUTURE_", filename, fixed = TRUE)
 
 # Every output path this job would produce -- used only for the
 # skip-existing check. COASTLINE/ICEFREE are always produced; ICEFREE_FUTURE
-# only for FUTURE-period files; CONCENTRATION/BUFFER only for sea ice (in
-# addition to, not instead of, the COASTLINE/ICEFREE/ICEFREE_FUTURE set).
+# only for FUTURE-period files; CONCENTRATION/BUFFER/DIST only for sea ice
+# (instead of the generic set).
 domain_mask_outputs <- c(coastline_path, icefree_path)
 if (is_future) domain_mask_outputs <- c(domain_mask_outputs, icefree_futurepath)
 
 concentration_path <- file.path(out_dir, paste0(stem, "_CONCENTRATION.tif"))
 buffer_paths        <- file.path(out_dir, paste0(stem, "_BUFFER_", sea_ice_buffer_km, "km.tif"))
+dist_open_path      <- file.path(out_dir, paste0(stem, "_DIST_TO_OPEN_WATER.tif"))
+dist_ice_path       <- file.path(out_dir, paste0(stem, "_DIST_TO_SEA_ICE.tif"))
 
 expected_outputs <- if (is_sea_ice) {
-  c(concentration_path, buffer_paths)
+  c(concentration_path, buffer_paths, dist_open_path, dist_ice_path)
 } else {
   domain_mask_outputs
 }
+
+# TRUE if this product still needs to be written (always TRUE when
+# SKIP_EXISTING is FALSE).
+needs_output <- function(path) !SKIP_EXISTING || !file.exists(path)
 
 # ---- 4b. Skip-existing check ------------------------------------------------------
 # If every output this job would produce already exists, skip the whole job
@@ -411,7 +439,7 @@ if (!is_sea_ice) {
 # fixed size_thresh of 100 cells for every model -- no histogram
 # inspection, no manual tuning.
 
-message("  sea-ice file detected -- running gap-fill, coast/SG masking, 60S crop, and buffer products")
+message("  sea-ice file detected -- running gap-fill, coast/SG masking, 60S crop, buffer and distance products")
 
 size_thresh <- 100
 
@@ -473,9 +501,6 @@ sea_ice_domain <- ice_free_domain
 
 domain.pts <- as.points(sea_ice_domain, values = TRUE)
 
-buffers <- lapply(sea_ice_buffer_km, function(km) terra::buffer(domain.pts, km * 1000))
-names(buffers) <- paste0(sea_ice_buffer_km, "km")
-
 # Extract a concentration raster's mean value within a pre-built buffer
 # around every ice-free-land cell, and place it back onto the domain grid.
 extract_to_buffer <- function(conc_raster, domain, domain.pts, buffer_vect) {
@@ -497,16 +522,100 @@ IDs <- IDs[!is.na(IDs[, 2]) & IDs[, 2] == 100, ]
 if (nrow(IDs) > 0) r[IDs$cell] <- 0
 
 # 2. Cropped to the 60S extent, keeping every overlapping cell
-conc_cropped <- terra::crop(r, Ant_extent, snap = "out")
-writeRaster(conc_cropped, concentration_path, overwrite = TRUE)
-message("  wrote ", concentration_path)
+if (needs_output(concentration_path)) {
+  conc_cropped <- terra::crop(r, Ant_extent, snap = "out")
+  writeRaster(conc_cropped, concentration_path, overwrite = TRUE)
+  message("  wrote ", concentration_path)
+} else {
+  message("  exists, skipping: ", basename(concentration_path))
+}
 
 # 3. Mean concentration within each buffer distance
-for (i in seq_along(buffers)) {
-  label <- names(buffers)[i]
-  buffered <- extract_to_buffer(r, sea_ice_domain, domain.pts, buffers[[label]])
+# Buffers are built one radius at a time, and only for radii whose output is
+# still missing (buffer construction is the slow part of this step).
+for (i in seq_along(sea_ice_buffer_km)) {
+  if (!needs_output(buffer_paths[i])) {
+    message("  exists, skipping: ", basename(buffer_paths[i]))
+    next
+  }
+  buffer_vect <- terra::buffer(domain.pts, sea_ice_buffer_km[i] * 1000)
+  buffered <- extract_to_buffer(r, sea_ice_domain, domain.pts, buffer_vect)
   writeRaster(buffered, buffer_paths[i], overwrite = TRUE)
   message("  wrote ", buffer_paths[i])
+}
+
+# ---- 5f. Sea ice only: distance to open water / distance to sea ice ---------------
+# Two derived variables, both measured from the CENTRE of every ice-free-land
+# cell to the centre of the nearest qualifying sea-ice-grid cell:
+#   - DIST_TO_OPEN_WATER: nearest open-water cell (SIC <  sea_ice_edge_thresh),
+#                         i.e. the sea-ice edge
+#   - DIST_TO_SEA_ICE   : nearest sea-ice cell    (SIC >= sea_ice_edge_thresh)
+# Distances are planar, in the target CRS (metres, EPSG:3031) -- the same
+# geometry terra::buffer() uses in section 5e -- and are written in km.
+
+# Distance (km) from every ice-free-land cell centre to the nearest non-NA
+# cell of `target_r`, placed back onto the ice-free domain grid. terra's
+# distance() on a raster returns, for every NA cell, the distance to the
+# nearest non-NA cell -- so ice-free-land cells (NA in `target_r`) get the
+# distance we want.
+dist_to_target <- function(target_r, domain, domain.pts, layer_name) {
+  out <- domain
+  values(out) <- NA
+  names(out) <- layer_name
+  
+  # No qualifying cells anywhere (e.g. no sea ice at all in a very warm
+  # future summer month): the distance is undefined, so leave it NA rather
+  # than returning a meaningless number.
+  if (global(target_r, "notNA")[[1]] == 0) {
+    warning("No qualifying cells for ", layer_name, " in ", filename,
+            " -- output will be all NA.")
+    return(out)
+  }
+  
+  d <- terra::distance(target_r) / 1000
+  out[cellFromXY(out, crds(domain.pts))] <- terra::extract(d, domain.pts)[, 2]
+  out
+}
+
+need_open <- needs_output(dist_open_path)
+need_ice  <- needs_output(dist_ice_path)
+
+if (need_open || need_ice) {
+  
+  # Restrict the (already reprojected + gap-filled) sea-ice climatology to
+  # ocean_domain, i.e. keep the maximum ocean extent and set everything else
+  # -- including the coastline boundary, which can come through as NA *or*
+  # 0% concentration depending on the model -- to NA. Left as 0, those cells
+  # would count as open water and pin the distance to ~0 along every coast.
+  # This is applied to a COPY (r_dist) so the CONCENTRATION and BUFFER
+  # products above are unaffected.
+  r_dist <- mask(r, ocean_domain)
+  
+  # The ice-free cells are where distances are measured FROM, so they must
+  # never be a target themselves (e.g. an ice-free cell holding 0% SIC would
+  # otherwise be its own nearest open-water cell).
+  r_dist[cellFromXY(r_dist, crds(domain.pts))] <- NA
+  
+  if (need_open) {
+    open_cells <- ifel(r_dist < sea_ice_edge_thresh, 1, NA)
+    dist_open <- dist_to_target(open_cells, sea_ice_domain, domain.pts, "dist_to_open_water_km")
+    writeRaster(dist_open, dist_open_path, overwrite = TRUE)
+    message("  wrote ", dist_open_path)
+  } else {
+    message("  exists, skipping: ", basename(dist_open_path))
+  }
+  
+  if (need_ice) {
+    ice_cells <- ifel(r_dist >= sea_ice_edge_thresh, 1, NA)
+    dist_ice <- dist_to_target(ice_cells, sea_ice_domain, domain.pts, "dist_to_sea_ice_km")
+    writeRaster(dist_ice, dist_ice_path, overwrite = TRUE)
+    message("  wrote ", dist_ice_path)
+  } else {
+    message("  exists, skipping: ", basename(dist_ice_path))
+  }
+  
+} else {
+  message("  exists, skipping: ", basename(dist_open_path), ", ", basename(dist_ice_path))
 }
 
 message("Done: ", model, " / ", filename)
