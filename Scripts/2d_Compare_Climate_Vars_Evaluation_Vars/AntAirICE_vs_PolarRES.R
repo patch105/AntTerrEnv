@@ -39,13 +39,11 @@ library(here)
 library(viridis)
 library(Metrics)
 
-# ---------------------------------------------------------------
-# OUTPATH
-# ---------------------------------------------------------------
 outpath <- here("Plots/Evaluation_AntAirICE")
+if (!dir.exists(outpath)) dir.create(outpath, recursive = TRUE)
 
 # ---------------------------------------------------------------
-# HELPERS (unchanged logic from original script)
+# HELPERS
 # ---------------------------------------------------------------
 align_to_model <- function(ref, mod) {
   if (!compareGeom(ref, mod, stopOnError = FALSE)) {
@@ -66,42 +64,51 @@ extract_pairs <- function(ref, mod, label) {
 }
 
 # ---------------------------------------------------------------
-# STYLE (approximating the reference figure: clean sans-serif,
-# bold left-aligned titles, muted gridlines/axis text)
+# STYLE
 # ---------------------------------------------------------------
-# Row-title colour lives here so it's defined once and reused by both
-# the real panels (build_row_plot) and the placeholder panels
-# (build_placeholder_row) - a "darkish grey", not near-black.
 row_title_colour <- "grey35"
+hide_inner_y_labels <- TRUE # only first panel in a row shows y tick labels
+row_height_pad   <- 0.10    # extra relative height per row for title / x-label
+# (increase if rows look cramped, decrease if gaps)
+
+# Shared axis titles (one x + one y per row)
+x_axis_title <- "Temperature (\u00B0C) - AntAir ICE"
+y_axis_title <- "Temperature (\u00B0C) - Model"
 
 theme_storyline <- function(base_size = 11, base_family = "Helvetica") {
   theme_classic(base_size = base_size, base_family = base_family) %+replace%
     theme(
-      strip.background   = element_blank(),
-      strip.text         = element_text(face = "bold", size = 10.5, colour = "grey20"),
-      plot.title         = element_text(face = "bold", size = 12.5, hjust = 0,
-                                        colour = "grey15", margin = margin(b = 6)),
-      axis.title         = element_text(size = 9.5, colour = "grey30"),
-      axis.text          = element_text(size = 8.5, colour = "grey45"),
-      axis.line          = element_line(colour = "grey60", linewidth = 0.35),
-      axis.ticks         = element_line(colour = "grey60", linewidth = 0.35),
-      panel.border      = element_rect(colour = "grey60", fill = NA, linewidth = 0.35),
-      panel.spacing      = unit(0.45, "cm"),
-      legend.title       = element_text(size = 9.5, colour = "grey20"),
-      legend.text        = element_text(size = 8.5, colour = "grey40")
+      strip.background = element_blank(),
+      # margin(b = ...) lifts the panel titles (HCLIM etc.) off the plot box
+      strip.text       = element_text(face = "bold", size = 10.5, colour = "grey20",
+                                      margin = margin(b = 5)),
+      axis.title       = element_text(size = 9.5, colour = "grey30"),
+      axis.text        = element_text(size = 8.5, colour = "grey45"),
+      axis.line        = element_line(colour = "grey60", linewidth = 0.35),
+      axis.ticks       = element_line(colour = "grey60", linewidth = 0.35),
+      panel.border     = element_rect(colour = "grey60", fill = NA, linewidth = 0.35),
+      panel.spacing    = unit(0.45, "cm"),
+      legend.title     = element_text(size = 9.5, colour = "grey20"),
+      legend.text      = element_text(size = 8.5, colour = "grey40")
     )
+}
+
+# A plain text "plot" used for row titles and shared axis titles
+label_plot <- function(label, angle = 0, size = 3.4, face = "plain",
+                       colour = "grey30", x = 0.5, hjust = 0.5) {
+  ggplot() +
+    annotate("text", x = x, y = 0.5, label = label, angle = angle,
+             size = size, fontface = face, colour = colour,
+             hjust = hjust, family = "Helvetica") +
+    scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) +
+    scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
+    theme_void()
 }
 
 # ---------------------------------------------------------------
 # MODEL CONFIGURATION
-#   row_group : which storyline row the panel belongs to
-#   col_label : which model column (sub-heading) the panel belongs to
-#   folder    : subfolder name under .../Regridded/
 # ---------------------------------------------------------------
 row_levels <- c("Storyline 1", "Storyline 2", "ERA5 Re-analysis")
-# Column order per row comes from the order models appear in
-# `model_config` below (HCLIM, RACMO, [MetUM]) - no separate
-# level list needed now that rows only build the panels they have.
 
 model_config <- tribble(
   ~model,   ~driving,     ~row_group,
@@ -119,19 +126,20 @@ model_config <- tribble(
   )
 
 # ---------------------------------------------------------------
-# SEASON DEFINITIONS
+# SEASONS
 # ---------------------------------------------------------------
 seasons <- c("Annual", "Summer", "Winter")
+placeholder_seasons <- c("Winter")
 
 ref_files <- c(
   Annual = "Mean_Annual_Temp_ICEFREE.tif",
   Summer = "Mean_Summer_Temp_ICEFREE.tif"
-  # Winter: not yet available - add e.g. "Mean_Winter_Temp_ICEFREE.tif"
-  # here and remove "Winter" from `placeholder_seasons` below once it exists.
+  # Winter: add "Mean_Winter_Temp_ICEFREE.tif" here and remove
+  # "Winter" from placeholder_seasons once it exists.
 )
 
 # ---------------------------------------------------------------
-# BUILD PAIRED DATA FOR ONE SEASON
+# PAIRED DATA
 # ---------------------------------------------------------------
 build_season_pairs <- function(season) {
   ref <- rast(here("Data/Environmental_predictors", ref_files[[season]]))
@@ -143,33 +151,29 @@ build_season_pairs <- function(season) {
       paste0("Mean_", season, "_Temperature_HISTORICAL_2003_2014_ICEFREE.tif")
     )
     mod <- rast(mod_path)
-    df <- extract_pairs(ref, mod, label = paste(model, driving, sep = "_"))
+    df  <- extract_pairs(ref, mod, label = paste(model, driving, sep = "_"))
     df$row_group <- row_group
     df$col_label <- col_label
+    df$season    <- season
     df
   })
 }
 
-# ---------------------------------------------------------------
-# SHARED FILL SCALE LIMIT (so the single collected legend is
-# valid across every panel, in every row, AND across every season's
-# saved figure - see the global computation before the main loop)
-# ---------------------------------------------------------------
 get_shared_fill_limit <- function(df, breaks) {
   x_bin <- cut(df$x, breaks = breaks, include.lowest = TRUE)
   y_bin <- cut(df$y, breaks = breaks, include.lowest = TRUE)
-  grp   <- interaction(df$row_group, df$col_label, drop = TRUE)
+  grp   <- interaction(df$row_group, df$col_label, df$season, drop = TRUE)
   max(table(grp, x_bin, y_bin))
 }
 
 # ---------------------------------------------------------------
-# BUILD ONE PANEL (a single model vs AntAirICE)
+# PANELS (no axis titles - those are shared per row)
 # ---------------------------------------------------------------
-build_panel_plot <- function(df_panel, col_label, ax_lim, ax_breaks,
-                             common_breaks, fill_limit) {
-  df_panel$col_label <- col_label
+build_panel_plot <- function(df_panel, strip_label, ax_lim, ax_breaks,
+                             common_breaks, fill_limit, show_y_text = TRUE) {
+  df_panel$strip <- strip_label
   
-  ggplot(df_panel, aes(x = x, y = y)) +
+  p <- ggplot(df_panel, aes(x = x, y = y)) +
     stat_bin2d(breaks = list(x = common_breaks, y = common_breaks),
                aes(fill = after_stat(count))) +
     geom_abline(slope = 1, intercept = 0, colour = "black", linewidth = 0.4) +
@@ -183,177 +187,186 @@ build_panel_plot <- function(df_panel, col_label, ax_lim, ax_breaks,
     scale_x_continuous(limits = ax_lim, breaks = ax_breaks) +
     scale_y_continuous(limits = ax_lim, breaks = ax_breaks) +
     coord_fixed() +
-    facet_wrap(~ col_label, nrow = 1) +
-    labs(
-      x = "Temperature (AntAir ICE) [\u00B0C]",
-      y = "Temperature (Model) [\u00B0C]"
-    ) +
+    facet_wrap(~ strip, nrow = 1) +
+    labs(x = NULL, y = NULL) +
     theme_storyline()
+  
+  if (!show_y_text) {
+    p <- p + theme(axis.text.y  = element_blank(),
+                   axis.ticks.y = element_blank())
+  }
+  p
 }
 
-# ---------------------------------------------------------------
-# BUILD ONE ROW (Storyline 1 / Storyline 2 / ERA5 Re-analysis)
-# Each row only contains the panels that actually exist for it
-# (2 for the storylines, 3 for ERA5). Because every row is wrapped
-# to the SAME overall figure width, a 2-panel row automatically
-# stretches those panels to fill the full width - no empty "MetUM"
-# slot needed. Panels stay square (coord_fixed), so 2-panel rows
-# end up a little taller than the 3-panel row, which is fine.
-# ---------------------------------------------------------------
-build_row_plot <- function(season_df, row_title, ax_lim, ax_breaks,
-                           common_breaks, fill_limit) {
-  row_config <- filter(model_config, row_group == row_title)
-  
-  panels <- lapply(row_config$col_label, function(cl) {
-    df_panel <- filter(season_df, row_group == row_title, col_label == cl)
-    build_panel_plot(df_panel, cl, ax_lim, ax_breaks, common_breaks, fill_limit)
-  })
-  
-  wrap_plots(panels, nrow = 1) +
-    plot_annotation(
-      title = row_title,
-      theme = theme(
-        plot.title = element_text(face = "bold", size = 12.5, hjust = 0,
-                                  colour = row_title_colour, margin = margin(b = 6),
-                                  family = "Helvetica")
-      )
-    )
-}
-
-# ---------------------------------------------------------------
-# BUILD FULL SEASON FIGURE (3 rows, shared legend, no overall title)
-# ax_lim / ax_breaks / common_breaks / fill_limit are now passed in
-# from the GLOBAL computation below, rather than recomputed per
-# season, so the continuous fill legend is identical across the
-# Annual, Summer, and Winter figures.
-# ---------------------------------------------------------------
-make_season_plot <- function(season_df, ax_lim, ax_breaks, common_breaks, fill_limit) {
-  row_plots <- lapply(row_levels, function(rg) {
-    build_row_plot(season_df, rg, ax_lim, ax_breaks, common_breaks, fill_limit)
-  })
-  
-  wrap_plots(row_plots, ncol = 1) +
-    plot_layout(guides = "collect") &
-    theme(
-      legend.position   = "right",
-      legend.key.height = unit(1.6, "cm"),
-      legend.key.width  = unit(0.35, "cm")
-    )
-}
-
-# ---------------------------------------------------------------
-# PLACEHOLDER FIGURE (used while a season has no observed data,
-# e.g. winter AntAirICE not yet available). Keeps the same row
-# titles / model sub-headings as the real figures, and the same
-# "stretch to fill the row" behaviour for the 2-panel rows, so it
-# drops in seamlessly once real data exists - just remove this
-# season from `placeholder_seasons` below.
-# ---------------------------------------------------------------
-placeholder_seasons <- c("Winter")
-
-build_placeholder_panel <- function(col_label) {
-  df <- data.frame(col_label = col_label, x = 0.5, y = 0.5)
+build_placeholder_panel <- function(strip_label) {
+  df <- data.frame(strip = strip_label, x = 0.5, y = 0.5)
   
   ggplot(df, aes(x = x, y = y)) +
     geom_text(label = "Data pending", size = 3.6, fontface = "italic",
               colour = "grey55", family = "Helvetica") +
-    facet_wrap(~ col_label, nrow = 1) +
+    facet_wrap(~ strip, nrow = 1) +
     scale_x_continuous(limits = c(0, 1)) +
     scale_y_continuous(limits = c(0, 1)) +
     coord_fixed() +
+    labs(x = NULL, y = NULL) +
     theme_storyline() +
     theme(
       axis.text        = element_blank(),
       axis.ticks       = element_blank(),
-      axis.title       = element_blank(),
       axis.line        = element_blank(),
       panel.background = element_rect(fill = "grey94", colour = NA)
     )
 }
 
-build_placeholder_row <- function(row_title) {
-  row_config <- filter(model_config, row_group == row_title)
-  panels <- lapply(row_config$col_label, build_placeholder_panel)
-  
-  wrap_plots(panels, nrow = 1) +
-    plot_annotation(
-      title = row_title,
-      theme = theme(
-        plot.title = element_text(face = "bold", size = 12.5, hjust = 0,
-                                  colour = row_title_colour, margin = margin(b = 6),
-                                  family = "Helvetica")
-      )
+# One panel for (season, row_group, model); real or placeholder
+make_panel <- function(season, row_group, model, strip_label, first_in_row,
+                       pairs_all, scale_args) {
+  if (season %in% placeholder_seasons) {
+    return(build_placeholder_panel(strip_label))
+  }
+  df_panel <- filter(pairs_all, season == !!season,
+                     row_group == !!row_group, col_label == !!model)
+  build_panel_plot(
+    df_panel, strip_label,
+    scale_args$ax_lim, scale_args$ax_breaks,
+    scale_args$common_breaks, scale_args$fill_limit,
+    show_y_text = first_in_row || !hide_inner_y_labels
+  )
+}
+
+# ---------------------------------------------------------------
+# ONE ROW BLOCK: title on top, shared y title on the left, shared
+# x title underneath, panels in the middle. Title / axis-title rows
+# use fixed cm sizes so they never eat into the (square) panels.
+# ---------------------------------------------------------------
+build_block <- function(panels, title) {
+  wrap_plots(
+    list(
+      label_plot(title, x = 0, hjust = 0, size = 4.4, face = "bold",
+                 colour = row_title_colour),
+      label_plot(y_axis_title, angle = 90),
+      wrap_plots(panels, nrow = 1),
+      label_plot(x_axis_title)
+    ),
+    design  = "AA\nBC\n#D",
+    widths  = unit(c(0.5, 1),       c("cm", "null")),
+    heights = unit(c(0.6, 1, 0.5),  c("cm", "null", "cm"))
+  )
+}
+
+# Stack blocks; heights proportional to 1 / n_panels (square panels)
+stack_blocks <- function(blocks, n_panels, legend_key_height = 1.6) {
+  h <- 1 / n_panels + row_height_pad
+  wrap_plots(blocks, ncol = 1, heights = unit(h, "null")) +
+    plot_layout(guides = "collect") &
+    theme(
+      legend.position    = "right",
+      legend.box.spacing = unit(0.1, "cm"),
+      legend.key.height  = unit(legend_key_height, "cm"),
+      legend.key.width   = unit(0.35, "cm")
     )
 }
 
-make_placeholder_plot <- function() {
-  row_plots <- lapply(row_levels, build_placeholder_row)
-  wrap_plots(row_plots, ncol = 1)
+# ---------------------------------------------------------------
+# FIGURE A: ANNUAL
+# ---------------------------------------------------------------
+make_annual_plot <- function(pairs_all, scale_args) {
+  blocks <- list(); n_panels <- c()
+  
+  for (rg in row_levels) {
+    cfg <- filter(model_config, row_group == rg)
+    panels <- lapply(seq_len(nrow(cfg)), function(i) {
+      make_panel("Annual", rg, cfg$model[i], cfg$model[i],
+                 first_in_row = (i == 1), pairs_all, scale_args)
+    })
+    blocks   <- c(blocks, list(build_block(panels, rg)))
+    n_panels <- c(n_panels, nrow(cfg))
+  }
+  # legend: a little shorter than before (1.6 -> 1.35 cm key height)
+  stack_blocks(blocks, n_panels, legend_key_height = 1.35)
 }
 
 # ---------------------------------------------------------------
-# GLOBAL SCALE (computed once, from the combined Annual + Summer
-# data, and reused for every season's figure below). This is what
-# makes the "Number of grid cells" legend continuous and identical
-# across the Annual / Summer / Winter(placeholder) PNGs, instead of
-# each figure silently rescaling to its own max count.
-#
-# The legend is additionally hard-capped at 400: if the raw shared
-# max is higher, fill_limit is clamped to 400 and any bin with more
-# than 400 grid cells is squished (scales::squish, set in
-# build_panel_plot) into the top colour rather than being dropped
-# as NA or stretching the scale to a rarely-hit outlier bin.
+# FIGURE B: SUMMER + WINTER COMBINED
+#   Storyline rows: 4 columns (Summer HCLIM, Summer RACMO,
+#                              Winter HCLIM, Winter RACMO)
+#   ERA5: a Summer row (3 panels) and a Winter row (3 panels)
+# ---------------------------------------------------------------
+make_summer_winter_plot <- function(pairs_all, scale_args) {
+  blocks <- list(); n_panels <- c()
+  sw <- c("Summer", "Winter")
+  
+  # Storyline 1 / 2: season x model across 4 columns
+  for (rg in c("Storyline 1", "Storyline 2")) {
+    cfg   <- filter(model_config, row_group == rg)
+    combo <- expand.grid(model = cfg$model, season = sw,
+                         stringsAsFactors = FALSE)
+    # expand.grid varies model fastest -> Summer HCLIM, Summer RACMO,
+    # Winter HCLIM, Winter RACMO
+    panels <- lapply(seq_len(nrow(combo)), function(i) {
+      make_panel(combo$season[i], rg, combo$model[i],
+                 paste0(combo$model[i], " (", combo$season[i], ")"),
+                 first_in_row = (i == 1), pairs_all, scale_args)
+    })
+    blocks   <- c(blocks, list(build_block(panels, rg)))
+    n_panels <- c(n_panels, nrow(combo))
+  }
+  
+  # ERA5: one row per season, 3 columns each
+  cfg <- filter(model_config, row_group == "ERA5 Re-analysis")
+  for (s in sw) {
+    panels <- lapply(seq_len(nrow(cfg)), function(i) {
+      make_panel(s, "ERA5 Re-analysis", cfg$model[i], cfg$model[i],
+                 first_in_row = (i == 1), pairs_all, scale_args)
+    })
+    blocks   <- c(blocks, list(build_block(panels, paste0("ERA5 Re-analysis \u2013 ", s))))
+    n_panels <- c(n_panels, nrow(cfg))
+  }
+  
+  stack_blocks(blocks, n_panels)
+}
+
+# ---------------------------------------------------------------
+# GLOBAL SCALE (Annual + Summer, shared by both figures so the
+# fill legend means the same thing everywhere; capped at 400)
 # ---------------------------------------------------------------
 real_seasons <- setdiff(seasons, placeholder_seasons)
 
-season_pairs_cache <- setNames(
-  lapply(real_seasons, build_season_pairs),
-  real_seasons
-)
-
+season_pairs_cache <- setNames(lapply(real_seasons, build_season_pairs),
+                               real_seasons)
 all_pairs <- bind_rows(season_pairs_cache)
 
 raw_lim   <- range(c(all_pairs$x, all_pairs$y), na.rm = TRUE)
 ax_lim    <- c(floor(raw_lim[1] / 5) * 5, ceiling(raw_lim[2] / 5) * 5)
 ax_breaks <- seq(ax_lim[1], ax_lim[2], by = 10)
 
-# identical bin edges everywhere -> counts are directly comparable
 common_breaks <- seq(ax_lim[1], ax_lim[2], length.out = 151)  # 150 bins
+fill_limit    <- min(get_shared_fill_limit(all_pairs, common_breaks), 400)
 
-fill_limit <- min(get_shared_fill_limit(all_pairs, common_breaks), 400)
+scale_args <- list(ax_lim = ax_lim, ax_breaks = ax_breaks,
+                   common_breaks = common_breaks, fill_limit = fill_limit)
 
 # ---------------------------------------------------------------
-# RUN FOR EACH SEASON AND SAVE
-# Sizing is tuned for pasting/printing at A4 (210 x 297 mm /
-# 8.27 x 11.69 in): a bit narrower and shorter than the page so
-# margins remain, with a high dpi so text stays crisp when scaled.
+# SAVE
 # ---------------------------------------------------------------
-a4_width  <- 7.8   # inches
-a4_height <- 10.5  # inches
+a4_width  <- 7.8    # inches
 a4_dpi    <- 320
 
-for (season in seasons) {
-  message("Processing ", season, " ...")
-  
-  if (season %in% placeholder_seasons) {
-    season_plot <- make_placeholder_plot()
-  } else {
-    season_pairs <- season_pairs_cache[[season]]
-    season_plot  <- make_season_plot(season_pairs, ax_lim, ax_breaks,
-                                     common_breaks, fill_limit)
-  }
-  
-  ggsave(
-    file.path(outpath, paste0("AntAirICE_vs_Models_", tolower(season), ".png")),
-    season_plot,
-    width  = a4_width,
-    height = a4_height,
-    dpi    = a4_dpi,
-    bg     = "white"
-  )
-  message(season, " plot saved.")
-}
+# Annual: 2 + 2 + 3 panel rows
+ggsave(
+  file.path(outpath, "AntAirICE_vs_Models_annual.png"),
+  make_annual_plot(all_pairs, scale_args),
+  width = 6.6, height = 9.0, dpi = a4_dpi, bg = "white"   # narrower -> legend sits closer
+)
+message("Annual plot saved.")
 
+# Summer + Winter combined: 4 blocks, so a bit taller (A4 max ~11.7 in)
+ggsave(
+  file.path(outpath, "AntAirICE_vs_Models_summer_winter.png"),
+  make_summer_winter_plot(all_pairs, scale_args),
+  width = a4_width, height = 10.8, dpi = a4_dpi, bg = "white"
+)
+message("Summer/Winter combined plot saved.")
 
 
 ############################################################################
@@ -365,49 +378,47 @@ for (season in seasons) {
 
 
 # ============================================================
-# AntAirICE vs HCLIM / RACMO / MetUM - MEAN BIAS MAPS
-# Same Storyline 1 / Storyline 2 / ERA5-Reanalysis row layout as
-# AntAirICE_vs_Models_plots.R, showing spatial bias maps
-# (Model - AntAirICE) instead of scatter-density panels, styled
-# after the CHELSA-vs-HCLIM bias-map script (coastline underlay,
-# 10 km aggregation, zero-centred diverging colour scale).
+# AntAirICE vs HCLIM / RACMO / MetUM
+#   PLOT 2  : Bias raster maps (Storyline 1 / 2 / ERA5 rows)
+#   PART 3  : Summary statistics (mean bias, RMSE, MAE, R2)
+#   PART 3B : Mean bias heatmap
 # ============================================================
 #
 # ASSUMPTIONS (check / adjust before running):
-#  1. Model rasters follow the same convention as the scatter-density
-#     script:
+#  1. Model rasters:
 #       Data/Environmental_predictors/PolarRes26/Regridded/<MODEL>_<DRIVING>/comparison/
 #         Mean_<Season>_Temperature_HISTORICAL_2003_2014_ICEFREE.tif
-#  2. MetUM only exists for the ERA5-driven run, so it only appears
-#     in row 3; rows 1-2 (2 panels) stretch to fill the same overall
-#     width as row 3 (3 panels) - exactly as in the scatter-density
-#     script, and for the same reason (no empty "MetUM" slot needed).
-#  3. No winter AntAirICE observations exist yet, so winter renders
-#     as a placeholder ("Data pending" tiles) - swap in the real file
-#     in `ref_files` and remove "Winter" from `placeholder_seasons`
-#     once it's available.
-#  4. Coastline shapefile path follows the CHELSA script:
-#       Data/add_coastline_medium_res_polygon_v7_10.shp
-#  5. Aggregation to 10 km (fact = 10) assumes native resolution is
-#     roughly 1 km, as in the CHELSA comparison script - adjust
-#     `agg_fact` below if your model grids are a different resolution.
-#
+#  2. MetUM only exists for the ERA5-driven run, so it only appears in
+#     the bottom row. Rows 1-2 (2 panels) and row 3 (3 panels) all span
+#     the same total width, so the bottom row is centred/aligned.
+#  3. No winter AntAirICE observations yet -> winter renders as a
+#     "Data pending" placeholder. Add the winter file to `ref_files`
+#     and remove "Winter" from `placeholder_seasons` once it exists.
+#  4. Coastline shapefile: Data/add_coastline_medium_res_polygon_v7_10.shp
+#  5. agg_fact = 10 assumes ~1 km native resolution.
 # ============================================================
 
 library(terra)
 library(ggplot2)
 library(dplyr)
+library(tidyr)
 library(purrr)
 library(patchwork)
 library(here)
 library(sf)
 library(scales)
+library(Metrics)
 
 # ---------------------------------------------------------------
 # OUTPATH
 # ---------------------------------------------------------------
 outpath <- here("Plots/Evaluation_AntAirICE")
 if (!dir.exists(outpath)) dir.create(outpath, recursive = TRUE)
+
+
+# ###############################################################
+# PLOT 2: BIAS RASTER MAPS
+# ###############################################################
 
 # ---------------------------------------------------------------
 # HELPERS
@@ -425,12 +436,10 @@ rast_to_df <- function(r, val_name = "value") {
   df
 }
 
-agg_fact <- 10  # aggregation factor - coarser cells "stand out" more visually
+agg_fact <- 10  # aggregation factor (coarser cells stand out more)
 
 # ---------------------------------------------------------------
-# DIVERGING COLOUR SCALE - zero always lines up with white, the
-# range doesn't have to be symmetric. Same construction as the
-# CHELSA vs HCLIM script.
+# DIVERGING COLOUR SCALE (zero always lines up with white)
 # ---------------------------------------------------------------
 diverging_ramp <- c(
   "#053061", "#2166ac", "#4393c3", "#92c5de", "#d1e5f0",
@@ -452,10 +461,11 @@ make_scale_values <- function(min_val, max_val) {
   )
 }
 
+# Slightly larger colour bar (was 3.2 x 0.4 cm)
 make_cbar <- function() {
   guide_colorbar(
-    barheight       = unit(3.2, "cm"),
-    barwidth        = unit(0.4, "cm"),
+    barheight       = unit(3.9, "cm"),
+    barwidth        = unit(0.5, "cm"),
     ticks.colour    = "black",
     frame.colour    = "black",
     frame.linewidth = 0.4
@@ -463,9 +473,7 @@ make_cbar <- function() {
 }
 
 # ---------------------------------------------------------------
-# STYLE - no panel border/outline anywhere ("no outline around the
-# plots"); bold left-aligned titles to match the scatter-density
-# script's look.
+# STYLE
 # ---------------------------------------------------------------
 theme_bias_map <- function(base_size = 11, base_family = "Helvetica") {
   theme_void(base_size = base_size) +
@@ -479,15 +487,8 @@ theme_bias_map <- function(base_size = 11, base_family = "Helvetica") {
     )
 }
 
-row_title_theme <- theme(
-  plot.title = element_text(face = "bold", size = 12.5, hjust = 0,
-                            colour = "grey15", margin = margin(b = 6),
-                            family = "Helvetica")
-)
-
 # ---------------------------------------------------------------
-# COASTLINE - lighter grey than the CHELSA script's grey85, no
-# outline of its own so it sits quietly behind the bias tiles.
+# COASTLINE
 # ---------------------------------------------------------------
 coast <- st_read(
   here("Data/add_coastline_medium_res_polygon_v7_10.shp"),
@@ -496,7 +497,7 @@ coast <- st_read(
 coast_fill <- "grey95"
 
 # ---------------------------------------------------------------
-# MODEL CONFIGURATION (identical to the scatter-density script)
+# MODEL CONFIGURATION
 # ---------------------------------------------------------------
 row_levels <- c("Storyline 1", "Storyline 2", "ERA5 Reanalysis")
 
@@ -518,41 +519,40 @@ model_config <- tribble(
 # ---------------------------------------------------------------
 # SEASON DEFINITIONS
 # ---------------------------------------------------------------
-seasons <- c("Annual", "Summer", "Winter")
+seasons             <- c("Annual", "Summer", "Winter")
 placeholder_seasons <- c("Winter")
 
 ref_files <- c(
   Annual = "Mean_Annual_Temp_ICEFREE.tif",
   Summer = "Mean_Summer_Temp_ICEFREE.tif"
-  # Winter: not yet available - add here + remove from
-  # placeholder_seasons above once it exists.
+  # Winter: not yet available
 )
 
+model_path <- function(folder, season) {
+  here(
+    "Data/Environmental_predictors/PolarRes26/Regridded",
+    folder, "comparison",
+    paste0("Mean_", season, "_Temperature_HISTORICAL_2003_2014_ICEFREE.tif")
+  )
+}
+
 # ---------------------------------------------------------------
-# BUILD BIAS RASTERS FOR ONE SEASON (Model - AntAirICE, aggregated
-# to 10 km)
+# BUILD BIAS RASTERS FOR ONE SEASON (Model - AntAirICE, 10 km)
 # ---------------------------------------------------------------
 build_season_bias <- function(season) {
   ref <- rast(here("Data/Environmental_predictors", ref_files[[season]]))
   
   pmap(model_config, function(model, driving, row_group, col_label, folder) {
-    mod_path <- here(
-      "Data/Environmental_predictors/PolarRes26/Regridded",
-      folder, "comparison",
-      paste0("Mean_", season, "_Temperature_HISTORICAL_2003_2014_ICEFREE.tif")
-    )
-    mod       <- rast(mod_path)
-    diff      <- mod - align_to_model(ref, mod)
-    diff_10km <- aggregate(diff, fact = agg_fact, fun = "mean", na.rm = TRUE)
+    mod       <- rast(model_path(folder, season))
+    bias_r    <- mod - align_to_model(ref, mod)
+    bias_10km <- aggregate(bias_r, fact = agg_fact, fun = "mean", na.rm = TRUE)
     
-    list(row_group = row_group, col_label = col_label, r = diff_10km)
+    list(row_group = row_group, col_label = col_label, r = bias_10km)
   })
 }
 
 # ---------------------------------------------------------------
-# SHARED DIVERGING SCALE FOR ONE SEASON - every panel in that
-# season's figure uses this single scale, so the one collected
-# legend is valid everywhere.
+# SHARED DIVERGING SCALE FOR ONE SEASON
 # ---------------------------------------------------------------
 get_season_scale <- function(bias_list) {
   all_vals <- unlist(lapply(bias_list, function(b) values(b$r, na.rm = TRUE)))
@@ -567,7 +567,7 @@ get_season_scale <- function(bias_list) {
 }
 
 # ---------------------------------------------------------------
-# BUILD ONE BIAS PANEL (a single model's bias map vs AntAirICE)
+# BUILD ONE BIAS PANEL
 # ---------------------------------------------------------------
 build_bias_panel <- function(r, col_label, scale_info) {
   df <- rast_to_df(r, "bias")
@@ -590,42 +590,7 @@ build_bias_panel <- function(r, col_label, scale_info) {
 }
 
 # ---------------------------------------------------------------
-# BUILD ONE ROW (mirrors build_row_plot() in the scatter-density
-# script: only the panels that exist for this row are built, and
-# because every row is stacked into the same overall figure width,
-# a 2-panel row automatically stretches to fill it - no empty
-# "MetUM" slot needed for rows 1-2).
-# ---------------------------------------------------------------
-build_bias_row <- function(row_title, bias_list, scale_info) {
-  row_items <- Filter(function(b) b$row_group == row_title, bias_list)
-  
-  panels <- lapply(row_items, function(b) {
-    build_bias_panel(b$r, b$col_label, scale_info)
-  })
-  
-  wrap_plots(panels, nrow = 1) +
-    plot_annotation(title = row_title, theme = row_title_theme)
-}
-
-# ---------------------------------------------------------------
-# BUILD FULL SEASON BIAS FIGURE (3 rows, one shared legend, no
-# overall title)
-# ---------------------------------------------------------------
-make_season_bias_plot <- function(season) {
-  bias_list  <- build_season_bias(season)
-  scale_info <- get_season_scale(bias_list)
-  
-  row_plots <- lapply(row_levels, function(rg) {
-    build_bias_row(rg, bias_list, scale_info)
-  })
-  
-  wrap_plots(row_plots, ncol = 1) +
-    plot_layout(guides = "collect") &
-    theme(legend.position = "right")
-}
-
-# ---------------------------------------------------------------
-# PLACEHOLDER FIGURE (winter - no observations yet)
+# PLACEHOLDER PANEL (winter - no observations yet)
 # ---------------------------------------------------------------
 build_placeholder_panel <- function(col_label) {
   df <- data.frame(x = 0.5, y = 0.5, label = "Data pending")
@@ -640,22 +605,100 @@ build_placeholder_panel <- function(col_label) {
     theme(panel.background = element_rect(fill = "grey94", colour = NA))
 }
 
-build_placeholder_row <- function(row_title) {
-  row_config <- filter(model_config, row_group == row_title)
-  panels <- lapply(row_config$col_label, build_placeholder_panel)
-  
-  wrap_plots(panels, nrow = 1) +
-    plot_annotation(title = row_title, theme = row_title_theme)
+# ---------------------------------------------------------------
+# FLAT LAYOUT HELPERS
+# Nested patchworks drop their plot_annotation() titles, and the
+# 3-panel row ends up left-aligned. So instead: each row title is
+# its own thin text strip, and everything goes into ONE flat
+# patchwork on a 6-column grid (2-panel rows: 3 columns per panel;
+# 3-panel row: 2 columns per panel) -> bottom row is centred and
+# all rows span the same width.
+# ---------------------------------------------------------------
+title_strip <- function(txt) {
+  ggplot() +
+    annotate("text", x = 0, y = 0.5, label = txt, hjust = 0,
+             fontface = "bold", size = 4.4, colour = "grey15",
+             family = "Helvetica") +
+    scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) +
+    scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
+    theme_void() +
+    theme(plot.margin = margin(0, 0, 0, 0))
 }
 
-make_placeholder_plot <- function() {
-  row_plots <- lapply(row_levels, build_placeholder_row)
-  wrap_plots(row_plots, ncol = 1)
+# row_panels: named list, one element per row, each a list of ggplots
+assemble_rows <- function(row_panels, collect_guides = TRUE) {
+  pieces  <- list()
+  areas   <- list()
+  heights <- list()
+  
+  for (i in seq_along(row_panels)) {
+    panels <- row_panels[[i]]
+    span   <- 6 / length(panels)
+    t_row  <- 2 * i - 1   # title strip row
+    p_row  <- 2 * i       # panel row
+    
+    pieces <- c(pieces, list(title_strip(names(row_panels)[i])))
+    areas  <- c(areas,  list(area(t_row, 1, t_row, 6)))
+    
+    for (j in seq_along(panels)) {
+      pieces <- c(pieces, list(panels[[j]]))
+      areas  <- c(areas,  list(area(p_row, (j - 1) * span + 1, p_row, j * span)))
+    }
+    
+    # Title strip: fixed height. Panel row: relative height; 2-panel rows
+    # are wider so (for roughly square maps) get 1.5x the 3-panel height.
+    heights <- c(heights, list(unit(0.7, "cm"),
+                               unit(6 / length(panels) / 2, "null")))
+  }
+  
+  wrap_plots(pieces) +
+    plot_layout(
+      design  = do.call(c, areas),
+      heights = do.call(grid::unit.c, heights),
+      widths  = unit(rep(1, 6), "null"),
+      guides  = if (collect_guides) "collect" else "keep"
+    )
 }
 
 # ---------------------------------------------------------------
-# RUN FOR EACH SEASON AND SAVE (A4-friendly sizing, matching the
-# scatter-density script)
+# BUILD FULL SEASON BIAS FIGURE
+# ---------------------------------------------------------------
+build_bias_row_panels <- function(row_title, bias_list, scale_info) {
+  row_items <- Filter(function(b) b$row_group == row_title, bias_list)
+  lapply(row_items, function(b) build_bias_panel(b$r, b$col_label, scale_info))
+}
+
+make_season_bias_plot <- function(season) {
+  bias_list  <- build_season_bias(season)
+  scale_info <- get_season_scale(bias_list)
+  
+  row_panels <- setNames(
+    lapply(row_levels, build_bias_row_panels, bias_list, scale_info),
+    row_levels
+  )
+  
+  assemble_rows(row_panels) &
+    theme(
+      legend.position    = "right",
+      legend.box.spacing = unit(0.9, "cm"),   # distance from plots
+      legend.title       = element_text(size = 10.5, colour = "grey20"),
+      legend.text        = element_text(size = 9.5,  colour = "grey40")
+    )
+}
+
+make_placeholder_plot <- function() {
+  row_panels <- setNames(
+    lapply(row_levels, function(rg) {
+      lapply(filter(model_config, row_group == rg)$col_label,
+             build_placeholder_panel)
+    }),
+    row_levels
+  )
+  assemble_rows(row_panels, collect_guides = FALSE)
+}
+
+# ---------------------------------------------------------------
+# RUN FOR EACH SEASON AND SAVE (A4-friendly)
 # ---------------------------------------------------------------
 a4_width  <- 7.8
 a4_height <- 10.5
@@ -682,193 +725,101 @@ for (season in seasons) {
 }
 
 
-##############################################################################
-################ PART 3 - Summary Statistics ################################
-##############################################################################
+# ###############################################################
+# PART 3: SUMMARY STATISTICS
+# Mean bias, RMSE, MAE and R2
+# ###############################################################
 
-# ============================================================
-# MODEL PERFORMANCE METRICS
-# Mean Bias, RMSE, MAE and R2
-# ============================================================
-
-# ---------------------------------------------------------------
-# CALCULATE METRICS FOR ONE MODEL / ONE SEASON
-# ---------------------------------------------------------------
 calculate_metrics <- function(ref, mod) {
-  
-  # Align AntAirICE to the model grid, exactly as in the
-  # scatter-density plots
+  # Align AntAirICE to the model grid
   ref <- align_to_model(ref, mod)
   
-  # Extract paired values
   vals <- data.frame(
     actual    = as.vector(values(ref)),
     predicted = as.vector(values(mod))
   )
-  
-  # Keep only grid cells where BOTH are non-NA
   vals <- vals[complete.cases(vals), ]
   
-  # Mean bias: model - AntAirICE
-  mean_bias <- mean(vals$predicted - vals$actual)
-  
-  # RMSE
-  rmse <- Metrics::rmse(
-    actual    = vals$actual,
-    predicted = vals$predicted
-  )
-  
-  # Mean absolute error
-  mae <- Metrics::mae(
-    actual    = vals$actual,
-    predicted = vals$predicted
-  )
-  
-  # R2 from a linear model
   lm_fit <- lm(predicted ~ actual, data = vals)
-  r2 <- summary(lm_fit)$r.squared
   
   data.frame(
     n_grid_cells = nrow(vals),
-    mean_bias    = mean_bias,
-    RMSE         = rmse,
-    MAE          = mae,
-    R2           = r2
+    mean_bias    = mean(vals$predicted - vals$actual),   # model - AntAirICE
+    RMSE         = Metrics::rmse(vals$actual, vals$predicted),
+    MAE          = Metrics::mae(vals$actual, vals$predicted),
+    R2           = summary(lm_fit)$r.squared
   )
 }
-
-
-# ---------------------------------------------------------------
-# CALCULATE AND SAVE METRICS
-# ---------------------------------------------------------------
 
 # Only seasons with an AntAirICE reference raster
 metric_seasons <- names(ref_files)
 
 for (season in metric_seasons) {
-  
   message("Calculating metrics for ", season, " ...")
   
-  # AntAirICE reference
-  ref <- rast(
-    here(
-      "Data/Environmental_predictors",
-      ref_files[[season]]
-    )
-  )
+  ref <- rast(here("Data/Environmental_predictors", ref_files[[season]]))
   
-  # Calculate metrics for every model configuration
   metrics_df <- pmap_dfr(
     model_config,
     function(model, driving, row_group, col_label, folder) {
-      
-      mod_path <- here(
-        "Data/Environmental_predictors/PolarRes26/Regridded",
-        folder,
-        "comparison",
-        paste0(
-          "Mean_",
-          season,
-          "_Temperature_HISTORICAL_2003_2014_ICEFREE.tif"
-        )
-      )
-      
-      mod <- rast(mod_path)
-      
+      mod     <- rast(model_path(folder, season))
       metrics <- calculate_metrics(ref, mod)
       
       metrics$model     <- model
       metrics$driving   <- driving
       metrics$row_group <- row_group
       metrics$season    <- season
-      
       metrics
     }
-  )
+  ) %>%
+    select(season, row_group, model, driving,
+           n_grid_cells, mean_bias, RMSE, MAE, R2)
   
-  # Put identifying columns first
-  metrics_df <- metrics_df %>%
-    select(
-      season,
-      row_group,
-      model,
-      driving,
-      n_grid_cells,
-      mean_bias,
-      RMSE,
-      MAE,
-      R2
-    )
-  
-  # Save one CSV per season
   write.csv(
     metrics_df,
-    file.path(
-      outpath,
-      paste0(
-        "AntAirICE_model_metrics_",
-        tolower(season),
-        ".csv"
-      )
-    ),
+    file.path(outpath, paste0("AntAirICE_model_metrics_", tolower(season), ".csv")),
     row.names = FALSE
   )
-  
   message(season, " metrics saved.")
 }
 
 
-##############################################################################
-################ PART 3B - MEAN BIAS PLOT ################################
-##############################################################################
-
-# ===============================================================
-# BIAS HEATMAP
+# ###############################################################
+# PART 3B: MEAN BIAS HEATMAP
 #
-# Rows:
-#   Storyline 1
-#   Storyline 2
-#   ERA5
-#
-# Column groups:
-#   HCLIM   ALL DJF JJA
-#   RACMO   ALL DJF JJA
-#   MetUM   ALL DJF JJA
-# ===============================================================
-
+# Rows:          Storyline 1 / Storyline 2 / ERA5
+# Column groups: HCLIM (ALL DJF JJA) | RACMO (ALL DJF JJA) | MetUM (ALL DJF JJA)
+# ###############################################################
 
 # ---------------------------------------------------------------
-# LOAD METRICS OUTPUT
+# LOAD METRICS OUTPUT (whichever season files exist)
 # ---------------------------------------------------------------
-
 metric_files <- c(
   Annual = file.path(outpath, "AntAirICE_model_metrics_annual.csv"),
   Summer = file.path(outpath, "AntAirICE_model_metrics_summer.csv"),
   Winter = file.path(outpath, "AntAirICE_model_metrics_winter.csv")
 )
 
-# Load files that exist
 bias_df <- bind_rows(
   lapply(names(metric_files), function(season) {
-    
     if (file.exists(metric_files[[season]])) {
       df <- read.csv(metric_files[[season]])
       df$season <- season
       df
-      
     } else {
       data.frame()
     }
   })
 )
 
+# Drop the row_group column from the CSVs - it's re-added below from
+# `model_structure` (avoids row_group.x / row_group.y after the join)
+bias_df <- select(bias_df, -any_of("row_group"))
 
 # ---------------------------------------------------------------
-# ADD EMPTY WINTER DATA IF WINTER FILE DOES NOT EXIST YET
+# ADD EMPTY WINTER ROWS IF WINTER FILE DOES NOT EXIST YET
 # ---------------------------------------------------------------
-
 if (!"Winter" %in% bias_df$season) {
-  
   winter_empty <- tribble(
     ~model,   ~driving,
     "HCLIM",  "MPI_ESM1",
@@ -879,181 +830,75 @@ if (!"Winter" %in% bias_df$season) {
     "RACMO",  "ERA5",
     "MetUM",  "ERA5"
   )
-  
-  winter_empty$season <- "Winter"
+  winter_empty$season    <- "Winter"
   winter_empty$mean_bias <- NA_real_
   
-  bias_df <- bind_rows(
-    bias_df,
-    winter_empty
-  )
+  bias_df <- bind_rows(bias_df, winter_empty)
 }
 
-
 # ---------------------------------------------------------------
-# DEFINE MODEL / STORYLINE STRUCTURE
+# MODEL / STORYLINE STRUCTURE
 # ---------------------------------------------------------------
-
 model_structure <- tribble(
-  ~row_group,          ~model,  ~driving,    ~model_group,
-  "Storyline 1",       "HCLIM", "MPI_ESM1",  "HCLIM",
-  "Storyline 1",       "RACMO", "MPI_ESM1",  "RACMO",
-  "Storyline 2",       "HCLIM", "CESM2",     "HCLIM",
-  "Storyline 2",       "RACMO", "CESM2",     "RACMO",
-  "ERA5",              "HCLIM", "ERA5",      "HCLIM",
-  "ERA5",              "RACMO", "ERA5",      "RACMO",
-  "ERA5",              "MetUM", "ERA5",      "MetUM"
+  ~row_group,     ~model,  ~driving,    ~model_group,
+  "Storyline 1",  "HCLIM", "MPI_ESM1",  "HCLIM",
+  "Storyline 1",  "RACMO", "MPI_ESM1",  "RACMO",
+  "Storyline 2",  "HCLIM", "CESM2",     "HCLIM",
+  "Storyline 2",  "RACMO", "CESM2",     "RACMO",
+  "ERA5",         "HCLIM", "ERA5",      "HCLIM",
+  "ERA5",         "RACMO", "ERA5",      "RACMO",
+  "ERA5",         "MetUM", "ERA5",      "MetUM"
 )
-
-
-# ---------------------------------------------------------------
-# ADD MODEL / STORYLINE INFORMATION
-# ---------------------------------------------------------------
 
 bias_df <- bias_df %>%
   mutate(
-    model_key = paste(model, driving, sep = "_")
-  ) %>%
-  left_join(
-    model_structure,
-    by = c("model", "driving")
-  ) %>%
-  mutate(
-    season_label = recode(
-      season,
-      "Annual" = "ALL",
-      "Summer" = "DJF",
-      "Winter" = "JJA"
-    )
+    season_label = recode(season,
+                          "Annual" = "ALL",
+                          "Summer" = "DJF",
+                          "Winter" = "JJA")
   )
 
-
 # ---------------------------------------------------------------
-# CREATE COMPLETE 3 x 3 x 3 GRID
-#
-# This ensures:
-#   - all three seasons are present
-#   - MetUM cells are empty for Storyline 1 and Storyline 2
-#   - JJA cells are empty until winter data exist
+# COMPLETE 3 x 3 x 3 GRID
+# (MetUM cells stay empty for the storylines; JJA empty until
+# winter data exist)
 # ---------------------------------------------------------------
-
 plot_grid <- expand_grid(
-  row_group = c(
-    "Storyline 1",
-    "Storyline 2",
-    "ERA5"
-  ),
-  model_group = c(
-    "HCLIM",
-    "RACMO",
-    "MetUM"
-  ),
-  season_label = c(
-    "ALL",
-    "DJF",
-    "JJA"
-  )
+  row_group    = c("Storyline 1", "Storyline 2", "ERA5"),
+  model_group  = c("HCLIM", "RACMO", "MetUM"),
+  season_label = c("ALL", "DJF", "JJA")
 ) %>%
+  left_join(model_structure, by = c("row_group", "model_group")) %>%
   left_join(
-    model_structure,
-    by = c("row_group", "model_group")
-  ) %>%
-  left_join(
-    bias_df %>%
-      select(
-        model,
-        driving,
-        season_label,
-        mean_bias
-      ),
-    by = c(
-      "model",
-      "driving",
-      "season_label"
-    )
+    bias_df %>% select(model, driving, season_label, mean_bias),
+    by = c("model", "driving", "season_label")
   )
 
+plot_grid$row_group    <- factor(plot_grid$row_group,
+                                 levels = rev(c("Storyline 1", "Storyline 2", "ERA5")))
+plot_grid$model_group  <- factor(plot_grid$model_group,
+                                 levels = c("HCLIM", "RACMO", "MetUM"))
+plot_grid$season_label <- factor(plot_grid$season_label,
+                                 levels = c("ALL", "DJF", "JJA"))
 
 # ---------------------------------------------------------------
-# SET ORDER
+# SYMMETRIC BIAS SCALE (limit rounded up to nearest 0.5)
 # ---------------------------------------------------------------
-
-plot_grid$row_group <- factor(
-  plot_grid$row_group,
-  levels = rev(c(
-    "Storyline 1",
-    "Storyline 2",
-    "ERA5"
-  ))
-)
-
-plot_grid$model_group <- factor(
-  plot_grid$model_group,
-  levels = c(
-    "HCLIM",
-    "RACMO",
-    "MetUM"
-  )
-)
-
-plot_grid$season_label <- factor(
-  plot_grid$season_label,
-  levels = c(
-    "ALL",
-    "DJF",
-    "JJA"
-  )
-)
-
-
-# ---------------------------------------------------------------
-# SYMMETRIC BIAS SCALE
-# ---------------------------------------------------------------
-
-max_bias <- max(
-  abs(plot_grid$mean_bias),
-  na.rm = TRUE
-)
-
-# Round limit up to nearest 0.5
+max_bias   <- max(abs(plot_grid$mean_bias), na.rm = TRUE)
 bias_limit <- ceiling(max_bias * 2) / 2
-
 
 # ---------------------------------------------------------------
 # BUILD HEATMAP
 # ---------------------------------------------------------------
-
-bias_plot <- ggplot(
-  plot_grid,
-  aes(
-    x = season_label,
-    y = row_group
-  )
-) +
+bias_plot <- ggplot(plot_grid, aes(x = season_label, y = row_group)) +
   
-  geom_tile(
-    aes(fill = mean_bias),
-    colour = "white",
-    linewidth = 0.8,
-    na.rm = FALSE
-  ) +
+  geom_tile(aes(fill = mean_bias), colour = "white", linewidth = 0.8) +
   
   geom_text(
     aes(
-      label = ifelse(
-        is.na(mean_bias),
-        "",
-        sprintf("%.2f", mean_bias)
-      ),
-      colour = ifelse(
-        is.na(mean_bias),
-        "black",
-        ifelse(
-          abs(mean_bias) > bias_limit * 0.45,
-          "white",
-          "black"
-        )
-      )
+      label  = ifelse(is.na(mean_bias), "", sprintf("%.2f", mean_bias)),
+      colour = ifelse(!is.na(mean_bias) & abs(mean_bias) > bias_limit * 0.45,
+                      "white", "black")
     ),
     size = 4
   ) +
@@ -1061,97 +906,41 @@ bias_plot <- ggplot(
   scale_colour_identity() +
   
   scale_fill_gradient2(
-    low = "#2C7BB6",
-    mid = "white",
-    high = "#D7191C",
+    low      = "#2C7BB6",
+    mid      = "white",
+    high     = "#D7191C",
     midpoint = 0,
-    limits = c(
-      -bias_limit,
-      bias_limit
-    ),
-    name = "Mean bias (\u00B0C)",
+    limits   = c(-bias_limit, bias_limit),
+    name     = "Mean bias (\u00B0C)",
     na.value = "grey95"
   ) +
   
-  facet_grid(
-    . ~ model_group
-  ) +
-  
-  labs(
-    x = NULL,
-    y = NULL
-  ) +
-  
+  facet_grid(. ~ model_group) +
+  labs(x = NULL, y = NULL) +
   coord_fixed() +
-  
   theme_classic() +
-  
   theme(
-    # Row labels
-    axis.text.y = element_text(
-      size = 11.5,
-      face = "bold",
-      colour = "black"
-    ),
-    
-    # ALL / DJF / JJA
-    axis.text.x = element_text(
-      size = 10.5,
-      colour = "black"
-    ),
-    
-    axis.ticks = element_line(
-      colour = "grey60",
-      linewidth = 0.35
-    ),
-    
-    axis.line = element_blank(),
-    
-    # HCLIM / RACMO / MetUM headings
-    strip.background = element_blank(),
-    
-    strip.text = element_text(
-      size = 10.5,
-      colour = "black"
-    ),
-    
-    # Remove gaps between the three column groups
-    panel.spacing.x = unit(0.8, "lines"),
-    
-    legend.title = element_text(
-      size = 10.5
-    ),
-    
-    legend.text = element_text(
-      size = 9.5
-    ),
-    
+    axis.text.y       = element_text(size = 11.5, face = "bold", colour = "black"),
+    axis.text.x       = element_text(size = 10.5, colour = "black"),
+    axis.ticks        = element_line(colour = "grey60", linewidth = 0.35),
+    axis.line         = element_blank(),
+    strip.background  = element_blank(),
+    strip.text        = element_text(size = 10.5, colour = "black"),
+    panel.spacing.x   = unit(0.8, "lines"),   # gap between column groups
+    legend.title      = element_text(size = 10.5),
+    legend.text       = element_text(size = 9.5),
     legend.key.height = unit(1, "cm"),
-    
-    legend.key.width = unit(0.35, "cm"),
-    
-    plot.margin = margin(
-      5, 5, 5, 5
-    )
+    legend.key.width  = unit(0.35, "cm"),
+    plot.margin       = margin(5, 5, 5, 5)
   )
-
 
 # ---------------------------------------------------------------
 # SAVE
 # ---------------------------------------------------------------
-
 ggsave(
-  file.path(
-    outpath,
-    "AntAirICE_model_bias_heatmap_grouped.png"
-  ),
+  file.path(outpath, "AntAirICE_model_bias_heatmap_grouped.png"),
   bias_plot,
-  width = 7.5,
+  width  = 7.5,
   height = 3.8,
-  dpi = 300
+  dpi    = 300
 )
-
-
-
-
-
