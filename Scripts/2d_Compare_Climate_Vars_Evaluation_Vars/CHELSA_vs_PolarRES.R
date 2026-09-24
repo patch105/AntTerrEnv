@@ -1,342 +1,194 @@
-# ============================================================
-# CHELSA vs HCLIM / RACMO — FUTURE ONLY spatial bias comparison
-# PENINSULA-ONLY VERSION
-#
-# Builds on the per-panel-legend version, with these additions:
-#   1. Loads Data/Peninsula_Continent_Boundary.shp and uses it to
-#      crop + mask every raster (CHELSA ensemble mean, each model's
-#      temperature, each model's bias) down to just the Peninsula,
-#      rather than plotting the full continent and zooming.
-#      -> Cropping BEFORE computing the shared colour scales means
-#         the temperature/difference colour ramps are stretched over
-#         the Peninsula's actual value range, instead of wasting most
-#         of the ramp on continent-wide extremes that don't occur here.
-#   2. The full-continent coastline layer is swapped for the Peninsula
-#      boundary polygon itself as the basemap outline in every panel.
-#   3. `agg_fact` is reduced (10 -> 5 km) since the Peninsula covers a
-#      much smaller area than the full continent, so a coarser 10 km
-#      aggregation would throw away most of the detail. Adjust back up
-#      if the plot renders slowly.
-#   4. Saved to a different output filename so it doesn't overwrite
-#      the full-continent plot.
-#
-# ASSUMPTION TO CHECK: the Peninsula boundary shapefile is assumed to
-# live at Data/Peninsula_Continent_Boundary.shp (same folder as the
-# existing coastline shapefile). Adjust `peninsula_path` below if it's
-# stored elsewhere.
-# ============================================================
 
-library(terra)
-library(ggplot2)
-library(dplyr)
-library(tibble)
-library(purrr)
-library(patchwork)
-library(here)
-library(scales)
-library(sf)
-
-# ============================================================
-# OUTPUT PATH
-# ============================================================
+library(terra); library(ggplot2); library(dplyr); library(tibble)
+library(purrr); library(patchwork); library(here); library(scales); library(sf)
 
 outpath <- here("Plots/Evaluation_CHELSA")
 if (!dir.exists(outpath)) dir.create(outpath, recursive = TRUE)
 
-# ============================================================
-# SIZING
-# ============================================================
+PAGE_W <- 8.27; PAGE_H <- 11.69; DPI <- 320; BASE <- 8.5; FONT <- "Helvetica"
+LEGBAR_H <- unit(3.2, "cm"); LEGBAR_W <- unit(0.3, "cm")
+agg_fact <- 10   # ~10 km for continent-wide
 
-PAGE_W <- 8.27
-PAGE_H <- 11.69
-DPI    <- 320
-BASE   <- 8.5
-FONT   <- "Helvetica"
-
-LEGBAR_H <- unit(1.9, "cm")
-LEGBAR_W <- unit(0.3,  "cm")
-
-agg_fact <- 5  # aggregate to ~5 km — Peninsula is much smaller than full continent
-
-# ============================================================
-# HELPERS
-# ============================================================
+# ASSUMPTION: continent coastline shapefile path -- adjust to your existing one
+coast <- st_read(
+  here("Data/add_coastline_medium_res_polygon_v7_10.shp"),
+  quiet = TRUE
+)
+coast_fill   <- "grey95"; coast_colour <- "grey35"
 
 rast_to_df <- function(r, val_name = "value") {
-  df <- as.data.frame(r, xy = TRUE, na.rm = TRUE)
-  names(df)[3] <- val_name
-  df
+  df <- as.data.frame(r, xy = TRUE, na.rm = TRUE); names(df)[3] <- val_name; df
 }
-
 align_to_model <- function(ref, mod) {
-  if (!compareGeom(ref, mod, stopOnError = FALSE)) {
-    ref <- resample(ref, mod, method = "bilinear")
-  }
+  if (!compareGeom(ref, mod, stopOnError = FALSE)) ref <- resample(ref, mod, method = "bilinear")
   ref
 }
-
-# Crop + mask a raster down to the Peninsula boundary polygon
-crop_mask_peninsula <- function(r, boundary_vect) {
-  r <- crop(r, boundary_vect)
-  r <- mask(r, boundary_vect)
-  r
-}
-
 theme_ant <- function(base_size = BASE, base_family = FONT) {
   theme_void(base_size = base_size, base_family = base_family) +
     theme(
-      plot.background    = element_rect(fill = "white", colour = NA),
-      panel.background   = element_rect(fill = "white", colour = NA),
-      legend.position    = "right",
-      legend.box.spacing = unit(1, "pt"),
-      legend.spacing     = unit(1, "pt"),
-      legend.title       = element_text(size = base_size, angle = 90,
-                                        hjust = 0.5, vjust = 0.5),
-      legend.text        = element_text(size = base_size - 1, margin = margin(l = 1)),
-      legend.key.height  = LEGBAR_H,
-      legend.key.width   = LEGBAR_W,
-      legend.margin      = margin(0, 0, 0, 0),
-      plot.title         = element_text(size = base_size + 1, face = "bold",
-                                        hjust = 0.4, vjust = 1, colour = "grey15",
-                                        margin = margin(b = 1)),
-      plot.margin        = margin(1, 1, 1, 1)
-    )
+      plot.background = element_rect(fill = "white", colour = NA),
+      panel.background = element_rect(fill = "white", colour = NA),
+      legend.position = "right", legend.box.spacing = unit(1, "pt"),
+      legend.spacing = unit(1, "pt"),
+      legend.title = element_text(size = base_size, angle = 90, hjust = 0.5, vjust = 0.5),
+      legend.text = element_text(size = base_size - 1, margin = margin(l = 1)),
+      legend.key.height = LEGBAR_H, legend.key.width = LEGBAR_W,
+      legend.margin = margin(0, 0, 0, 0),
+      plot.title = element_text(size = base_size + 1, face = "bold", hjust = 0.4,
+                                vjust = 1, colour = "grey15", margin = margin(b = 1)),
+      plot.margin = margin(1, 1, 1, 1))
 }
-
 make_cbar <- function() {
-  guide_colorbar(
-    title.position  = "right",
-    title.hjust     = 0.5,
-    barheight       = LEGBAR_H,
-    barwidth        = LEGBAR_W,
-    ticks.colour    = "black",
-    frame.colour    = "black",
-    frame.linewidth = 0.35
-  )
+  guide_colorbar(title.position = "right", title.hjust = 0.5,
+                 barheight = LEGBAR_H, barwidth = LEGBAR_W,
+                 ticks.colour = "black", frame.colour = "black", frame.linewidth = 0.35)
 }
-
-row_title_theme <- theme(
-  plot.title = element_text(face = "bold", size = BASE + 2, hjust = 0.4,
-                            colour = "grey15", margin = margin(b = 2),
-                            family = FONT)
-)
-
-diverging_ramp <- c(
-  "#053061", "#2166ac", "#4393c3", "#92c5de", "#d1e5f0",
-  "white",
-  "#fddbc7", "#f4a582", "#d6604d", "#b2182b", "#67001f"
-)
-
+diverging_ramp <- c("#053061","#2166ac","#4393c3","#92c5de","#d1e5f0","white",
+                    "#fddbc7","#f4a582","#d6604d","#b2182b","#67001f")
 make_scale_values <- function(min_val, max_val) {
-  white_pos <- (0 - min_val) / (max_val - min_val)
-  c(
-    0,
-    white_pos * 0.25, white_pos * 0.50, white_pos * 0.75, white_pos * 0.95,
-    white_pos,
-    white_pos + (1 - white_pos) * 0.15,
-    white_pos + (1 - white_pos) * 0.40,
-    white_pos + (1 - white_pos) * 0.65,
-    white_pos + (1 - white_pos) * 0.85,
-    1
-  )
+  w <- (0 - min_val) / (max_val - min_val)
+  c(0, w*0.25, w*0.50, w*0.75, w*0.95, w,
+    w + (1-w)*0.15, w + (1-w)*0.40, w + (1-w)*0.65, w + (1-w)*0.85, 1)
 }
+base_layers <- function() geom_sf(data = coast, fill = coast_fill, colour = coast_colour, linewidth = 0.15)
 
 # ============================================================
-# PENINSULA BOUNDARY — used both as the basemap outline and as the
-# crop/mask extent for every raster
+# PLOT 1: FUTURE - HISTORICAL CHANGE
 # ============================================================
 
-peninsula_path     <- here("Data/Peninsula_Continent_Boundary.shp")
-peninsula_boundary <- st_read(peninsula_path, quiet = TRUE)
-peninsula_vect     <- vect(peninsula_boundary)
-peninsula_bbox      <- st_bbox(peninsula_boundary)
+# NOTE: you wrote "Mean_Winter_Temperature_HISTORICAL_..." for CHELSA but the
+# models are Annual. Assumed a typo -> Annual. Change to "Winter" here if intended.
+chelsa_hist_var <- "Annual"
 
-coast_fill    <- "grey95"
-coast_colour  <- "grey35"
+# ---- CHELSA: ensemble-mean future minus historical ----
+gcms <- c("gfdl-esm4","ipsl-cm6a-lr","mpi-esm1-2-hr","mri-esm2-0","ukesm1-0-ll")
+CH_fut <- app(rast(sapply(gcms, function(g) here(sprintf(
+  "Data/CHELSA/comparison/Mean_Annual_Temperature_FUTURE_%s_2071_2100_ICEFREE.tif", g)))),
+  mean, na.rm = TRUE)
+CH_hist <- rast(here(sprintf(
+  "Data/CHELSA/comparison/Mean_%s_Temperature_HISTORICAL_1981_2010_ICEFREE.tif", chelsa_hist_var)))
+CH_delta <- aggregate(CH_fut - align_to_model(CH_hist, CH_fut), fact = agg_fact, fun = "mean", na.rm = TRUE)
 
-# ============================================================
-# PANEL BUILDERS — basemap swapped to peninsula_boundary, view locked
-# to its bounding box
-# ============================================================
-
-make_temp_panel <- function(r, panel_label, temp_min, temp_max, temp_values) {
-  df <- rast_to_df(r, "temp")
-  ggplot() +
-    geom_sf(data = peninsula_boundary, fill = coast_fill, colour = coast_colour, linewidth = 0.15) +
-    geom_tile(data = df, aes(x = x, y = y, fill = temp)) +
-    scale_fill_gradientn(
-      colours = diverging_ramp,
-      values  = temp_values,
-      limits  = c(temp_min, temp_max),
-      breaks  = pretty(c(temp_min, temp_max), n = 6),
-      name    = "Temperature (\u00B0C)",
-      oob     = squish,
-      guide   = make_cbar()
-    ) +
-    coord_sf(xlim = c(peninsula_bbox[["xmin"]], peninsula_bbox[["xmax"]]),
-             ylim = c(peninsula_bbox[["ymin"]], peninsula_bbox[["ymax"]]),
-             expand = FALSE) +
-    labs(title = panel_label) +
-    theme_ant()
-}
-
-make_diff_panel <- function(r, diff_min, diff_max, diff_breaks, diff_values) {
-  df <- rast_to_df(r, "diff")
-  ggplot() +
-    geom_sf(data = peninsula_boundary, fill = coast_fill, colour = coast_colour, linewidth = 0.15) +
-    geom_tile(data = df, aes(x = x, y = y, fill = diff)) +
-    scale_fill_gradientn(
-      colours = diverging_ramp,
-      values  = diff_values,
-      limits  = c(diff_min, diff_max),
-      breaks  = diff_breaks,
-      name    = "Difference (\u00B0C)",
-      oob     = squish,
-      guide   = make_cbar()
-    ) +
-    coord_sf(xlim = c(peninsula_bbox[["xmin"]], peninsula_bbox[["xmax"]]),
-             ylim = c(peninsula_bbox[["ymin"]], peninsula_bbox[["ymax"]]),
-             expand = FALSE) +
-    labs(title = "Difference") +
-    theme_ant()
-}
-
-# ============================================================
-# MODEL CONFIGURATION
-# ============================================================
-
+# ---- Models ----
 model_config <- tribble(
-  ~model,   ~driving,   ~row_group,
-  "HCLIM",  "MPI_ESM1", "Storyline 1",
-  "RACMO",  "MPI_ESM1", "Storyline 1",
-  "HCLIM",  "CESM2",    "Storyline 2",
-  "RACMO",  "CESM2",    "Storyline 2"
-) %>%
-  mutate(
-    col_label = model,
-    folder    = paste0(model, "_", driving)
-  )
+  ~model, ~driving, ~row_group,
+  "HCLIM","MPI_ESM1","Storyline 1", "RACMO","MPI_ESM1","Storyline 1",
+  "HCLIM","CESM2","Storyline 2",     "RACMO","CESM2","Storyline 2"
+) %>% mutate(folder = paste0(model, "_", driving),
+             label  = paste0(model, " \u2013 ", row_group))
 
-storyline_levels <- c("Storyline 1", "Storyline 2")
+load_delta <- function(folder, ...) {
+  d <- here("Data/Environmental_predictors/PolarRes26/Regridded", folder, "comparison")
+  fut  <- rast(file.path(d, "Mean_Annual_Temperature_FUTURE_2071_2100_ICEFREE.tif"))
+  hist <- rast(file.path(d, "Mean_Annual_Temperature_HISTORICAL_1985_2010_ICEFREE.tif"))
+  aggregate(fut - align_to_model(hist, fut), fact = agg_fact, fun = "mean", na.rm = TRUE)
+}
+deltas <- pmap(model_config, load_delta)
+names(deltas) <- model_config$label
 
-# ============================================================
-# 1. CHELSA FUTURE ENSEMBLE MEAN (2071-2100, 5 GCMs) — cropped/masked
-#    to the Peninsula immediately after building the ensemble mean
-# ============================================================
+# ---- Shared scale: warming (sequential); diverging if any cooling ----
+all_vals <- c(values(CH_delta, na.rm = TRUE), unlist(lapply(deltas, values, na.rm = TRUE)))
+lo <- floor(min(all_vals)); hi <- ceiling(max(all_vals))
+if (lo < 0) {
+  ramp <- diverging_ramp; vals <- make_scale_values(lo, hi)
+} else {
+  ramp <- c("#ffffcc","#fed976","#fd8d3c","#e31a1c","#b10026","#67001f"); vals <- NULL
+}
+message("Change range: ", round(min(all_vals),2), " to ", round(max(all_vals),2))
 
-CHELSA_future1 <- rast(here("Data/CHELSA/comparison/Mean_Annual_Temperature_FUTURE_gfdl-esm4_2071_2100_ICEFREE.tif"))
-CHELSA_future2 <- rast(here("Data/CHELSA/comparison/Mean_Annual_Temperature_FUTURE_ipsl-cm6a-lr_2071_2100_ICEFREE.tif"))
-CHELSA_future3 <- rast(here("Data/CHELSA/comparison/Mean_Annual_Temperature_FUTURE_mpi-esm1-2-hr_2071_2100_ICEFREE.tif"))
-CHELSA_future4 <- rast(here("Data/CHELSA/comparison/Mean_Annual_Temperature_FUTURE_mri-esm2-0_2071_2100_ICEFREE.tif"))
-CHELSA_future5 <- rast(here("Data/CHELSA/comparison/Mean_Annual_Temperature_FUTURE_ukesm1-0-ll_2071_2100_ICEFREE.tif"))
-
-CHELSA_future <- c(CHELSA_future1, CHELSA_future2, CHELSA_future3,
-                   CHELSA_future4, CHELSA_future5)
-CHELSA_future <- app(CHELSA_future, mean, na.rm = TRUE)
-CHELSA_future <- crop_mask_peninsula(CHELSA_future, peninsula_vect)
-
-# ============================================================
-# 2. LOAD EACH FUTURE MODEL, CROP/MASK TO PENINSULA, COMPUTE BIAS
-# ============================================================
-
-load_future_model <- function(model, driving, row_group, col_label, folder) {
-  mod_path <- here(
-    "Data/Environmental_predictors/PolarRes26/Regridded",
-    folder, "comparison",
-    "Mean_Annual_Temperature_FUTURE_2071_2100_ICEFREE.tif"
-  )
-  mod  <- rast(mod_path)
-  mod  <- crop_mask_peninsula(mod, peninsula_vect)
-  diff <- mod - align_to_model(CHELSA_future, mod)
-  diff <- crop_mask_peninsula(diff, peninsula_vect)
-  
-  list(
-    row_group = row_group,
-    col_label = col_label,
-    temp_10km = aggregate(mod,  fact = agg_fact, fun = "mean", na.rm = TRUE),
-    diff_10km = aggregate(diff, fact = agg_fact, fun = "mean", na.rm = TRUE)
-  )
+make_delta_panel <- function(r, title) {
+  ggplot() + base_layers() +
+    geom_tile(data = rast_to_df(r, "d"), aes(x, y, fill = d)) +
+    scale_fill_gradientn(colours = ramp, values = vals, limits = c(lo, hi),
+                         breaks = pretty(c(lo, hi), n = 6),
+                         name = "Change in temperature (\u00B0C)", oob = squish, guide = make_cbar()) +
+    coord_sf(expand = FALSE) + labs(title = title) + theme_ant()
 }
 
-model_data <- pmap(model_config, load_future_model)
-names(model_data) <- paste(model_config$row_group, model_config$col_label, sep = " - ")
+p_chelsa <- make_delta_panel(CH_delta, "CHELSA (ensemble mean)")
+# panel titles are now just the RCM name (storyline shown by the block title)
+p <- lapply(seq_along(deltas), function(i) make_delta_panel(deltas[[i]], model_config$model[i]))
 
-CHELSA_future_10km <- aggregate(CHELSA_future, fact = agg_fact, fun = "mean", na.rm = TRUE)
+# Large left-aligned storyline title (sits over column 1)
+storyline_title <- function(txt) {
+  ggplot() +
+    annotate("text", x = 0, y = 0.5, label = txt, hjust = 0, vjust = 0.5,
+             fontface = "bold", size = 6, family = FONT, colour = "grey15") +
+    scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) +
+    scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
+    theme_void() + theme(plot.margin = margin(0, 0, 0, 4))
+}
+
+# One shared legend per row: the two panels use identical scales, so
+# guides = "collect" merges them into a single colourbar on the right
+make_pair_row <- function(a, b) {
+  (a + b) + plot_layout(guides = "collect") &
+    theme(legend.position = "right")
+}
+make_block <- function(title, a, b) {
+  storyline_title(title) / make_pair_row(a, b) + plot_layout(heights = c(0.09, 1))
+}
+
+chelsa_row <- plot_spacer() + p_chelsa + plot_spacer() + plot_layout(widths = c(0.5, 1, 0.5))
+block1 <- make_block("Storyline 1", p[[1]], p[[2]])   # HCLIM | RACMO
+block2 <- make_block("Storyline 2", p[[3]], p[[4]])   # HCLIM | RACMO
+
+final_plot <- chelsa_row / block1 / block2 + plot_layout(heights = c(1, 1.1, 1.1))
+
+# Shorter page than Plot 2 to tighten row spacing (raise toward PAGE_H if panels feel cramped)
+PLOT1_H <- 9.5
+out_file <- file.path(outpath, "plot_annual_temp_CHANGE_FUTURE_minus_HISTORICAL.png")
+ggsave(out_file, final_plot, width = PAGE_W, height = PLOT1_H, dpi = DPI, bg = "white")
+message("Saved: ", out_file)
 
 # ============================================================
-# 3. SHARED COLOUR SCALES — now computed over Peninsula-only values,
-#    so the ramp isn't stretched across continent-wide extremes
+# PLOT 2: MPI-ESM1 ONLY, FUTURE, CHELSA vs HCLIM / RACMO
 # ============================================================
 
-all_temp_vals <- c(
-  values(CHELSA_future_10km, na.rm = TRUE),
-  unlist(lapply(model_data, function(m) values(m$temp_10km, na.rm = TRUE)))
-)
-temp_min    <- floor(min(all_temp_vals))
-temp_max    <- ceiling(max(all_temp_vals))
+CH <- rast(here("Data/CHELSA/comparison/Mean_Annual_Temperature_FUTURE_mpi-esm1-2-hr_2071_2100_ICEFREE.tif"))
+
+models <- c("HCLIM", "RACMO")
+load_model <- function(m) {
+  mod <- rast(here("Data/Environmental_predictors/PolarRes26/Regridded",
+                   paste0(m, "_MPI_ESM1"), "comparison",
+                   "Mean_Annual_Temperature_FUTURE_2071_2100_ICEFREE.tif"))
+  diff <- mod - align_to_model(CH, mod)
+  list(temp = aggregate(mod,  fact = agg_fact, fun = "mean", na.rm = TRUE),
+       diff = aggregate(diff, fact = agg_fact, fun = "mean", na.rm = TRUE))
+}
+md <- setNames(lapply(models, load_model), models)
+CH_agg <- aggregate(CH, fact = agg_fact, fun = "mean", na.rm = TRUE)
+
+all_temp <- c(values(CH_agg, na.rm = TRUE), unlist(lapply(md, function(m) values(m$temp, na.rm = TRUE))))
+temp_min <- floor(min(all_temp)); temp_max <- ceiling(max(all_temp))
 temp_values <- make_scale_values(temp_min, temp_max)
 
-all_diff_vals <- unlist(lapply(model_data, function(m) values(m$diff_10km, na.rm = TRUE)))
-diff_min    <- floor(min(all_diff_vals, na.rm = TRUE))
-diff_max    <- ceiling(max(all_diff_vals, na.rm = TRUE))
+all_diff <- unlist(lapply(md, function(m) values(m$diff, na.rm = TRUE)))
+diff_min <- floor(min(all_diff)); diff_max <- ceiling(max(all_diff))
 diff_breaks <- pretty(c(diff_min, diff_max), n = 6)
 diff_values <- make_scale_values(diff_min, diff_max)
 
-message(
-  "Peninsula future bias range: ", round(min(all_diff_vals), 2), " to ",
-  round(max(all_diff_vals), 2), " \u00B0C  ->  scale limits: ",
-  diff_min, " to ", diff_max, " \u00B0C"
-)
+make_panel <- function(r, title, lo, hi, vals, name, brks = pretty(c(lo, hi), n = 6)) {
+  ggplot() + base_layers() +
+    geom_tile(data = rast_to_df(r, "v"), aes(x, y, fill = v)) +
+    scale_fill_gradientn(colours = diverging_ramp, values = vals, limits = c(lo, hi),
+                         breaks = brks, name = name, oob = squish, guide = make_cbar()) +
+    coord_sf(expand = FALSE) + labs(title = title) + theme_ant()
+}
+temp_panel <- function(r, t) make_panel(r, t, temp_min, temp_max, temp_values, "Temperature (\u00B0C)")
+diff_panel <- function(r, t) make_panel(r, t, diff_min, diff_max, diff_values, "Difference (\u00B0C)", diff_breaks)
 
-# ============================================================
-# 4. BUILD PANELS
-# ============================================================
-
-p_chelsa <- make_temp_panel(CHELSA_future_10km, "CHELSA", temp_min, temp_max, temp_values)
-
-model_panels <- lapply(model_data, function(m) {
-  list(
-    temp = make_temp_panel(m$temp_10km, m$col_label, temp_min, temp_max, temp_values),
-    diff = make_diff_panel(m$diff_10km, diff_min, diff_max, diff_breaks, diff_values)
-  )
-})
-
-# ============================================================
-# 5. ASSEMBLE — per-panel legends (no guides = "collect"/"keep"
-#    anywhere), matching the previous per-panel-legend version
-# ============================================================
-
-build_model_row <- function(panels) {
-  panels$temp + plot_spacer() + panels$diff +
-    plot_layout(ncol = 3, widths = c(1, 0.015, 1))
+chelsa_row <- plot_spacer() + temp_panel(CH_agg, "CHELSA (MPI-ESM1-2-HR)") + plot_spacer() +
+  plot_layout(widths = c(0.5, 1, 0.5))
+model_row <- function(m) {
+  temp_panel(md[[m]]$temp, paste0(m, " (MPI-ESM1)")) + plot_spacer() +
+    diff_panel(md[[m]]$diff, paste0(m, " \u2212 CHELSA")) +
+    plot_layout(widths = c(1, 0.015, 1))
 }
 
-build_storyline_block <- function(storyline_label) {
-  rows <- model_config %>% filter(row_group == storyline_label) %>% pull(col_label)
-  keys <- paste(storyline_label, rows, sep = " - ")
-  
-  row_plots <- lapply(model_panels[keys], build_model_row)
-  
-  wrap_plots(row_plots, ncol = 1) +
-    plot_annotation(title = storyline_label, theme = row_title_theme)
-}
-
-chelsa_block <- plot_spacer() + p_chelsa + plot_spacer() +
-  plot_layout(ncol = 3, widths = c(0.06, 1, 0.06))
-
-storyline_blocks <- lapply(storyline_levels, build_storyline_block)
-
-final_plot <- (chelsa_block / storyline_blocks[[1]] / storyline_blocks[[2]]) +
-  plot_layout(heights = c(1, 2, 2))
-
-# ============================================================
-# 6. SAVE — different filename so the full-continent version is
-#    preserved
-# ============================================================
-
-out_file <- file.path(outpath, "plot_annual_temp_FUTURE_comparison_CHELSA_vs_HCLIM_RACMO_PENINSULA.png")
-
-ggsave(out_file, final_plot, width = PAGE_W, height = PAGE_H,
-       dpi = DPI, bg = "white")
-
+final_plot <- chelsa_row / model_row("HCLIM") / model_row("RACMO") + plot_layout(heights = c(1, 1, 1))
+out_file <- file.path(outpath, "plot_annual_temp_FUTURE_MPI_ESM1_CHELSA_vs_HCLIM_RACMO.png")
+# Shorter page (same idea as Plot 1) to bring the rows closer together
+PLOT2_H <- 9.5
+ggsave(out_file, final_plot, width = PAGE_W, height = PLOT2_H, dpi = DPI, bg = "white")
 message("Saved: ", out_file)
