@@ -28,6 +28,13 @@
 # prints exactly what got skipped so you can cross-check it against Script
 # 1's list of known corrupt files (and catch anything new).
 #
+# GRID ALIGNMENT (net solar radiation):
+# rsus (monthly-chunk "additional" files) and rsds (standard continuous
+# files) are NOT on exactly the same grid. Before subtracting to get net
+# shortwave, rsus is therefore resampled onto the rsds grid (rsds is the
+# template) with bilinear interpolation -- see align_to_template() below,
+# used by the solar_rad_net and total_solar_rad_net blocks.
+#
 # Everything else -- the climatology maths, period definitions, output
 # naming, output folder -- is taken as-is from Script 2, so outputs from
 # this script sit alongside Script 2's HCLIM_CESM2 outputs seamlessly.
@@ -227,6 +234,25 @@ report_missing_year_months <- function(dates, years, variable_name, scenario) {
   }
 }
 
+# ---- 2c. Grid alignment helper (NEW) -----------------------------------------------
+# rsus (monthly-chunk files) and rsds (standard continuous files) are not on
+# exactly the same grid, so rsus is resampled onto the rsds grid (rsds =
+# template) before the two are subtracted to give net shortwave.
+#
+# This is equivalent to resample(rsus, rsds, method = "bilinear"). Only the
+# FIRST layer of rsds is passed as the template because resample() only uses
+# the template's geometry (extent, resolution, CRS), which is much cheaper
+# than handing it the whole multi-year stack. If the grids already match
+# exactly the resample is skipped.
+align_to_template <- function(r, template, label = "layer") {
+  if (isTRUE(compareGeom(r, template, stopOnError = FALSE))) {
+    message("  ", label, " already on the template grid -- no resampling needed.")
+    return(r)
+  }
+  message("  resampling ", label, " onto the rsds grid (bilinear)")
+  resample(r, template, method = "bilinear")
+}
+
 # ---- 3. Climatology maths (identical to Script 2) --------------------------------
 
 climatological_monthly_mean <- function(r, dates, month, years) {
@@ -338,9 +364,15 @@ if (variable == "sea_ice") {
 # absorb the known corrupt May-1997 rsus file (see report_missing_year_
 # months() output below) the same way Script 1's manual NA-fill-then-skip
 # did -- that month is simply excluded from the days used to compute the
-# climatology for years containing it. The MJ conversion (x 0.0864) is
-# applied after differencing rsds - rsus; since it's just a scalar
-# multiply, doing it before or after the subtraction gives the same result.
+# climatology for years containing it.
+#
+# rsus is on a slightly different grid to rsds, so after the two series are
+# matched on common dates, rsus is resampled onto the rsds grid (bilinear,
+# rsds = template) BEFORE the subtraction.
+#
+# The MJ conversion (x 0.0864) is applied after differencing rsds - rsus;
+# since it's just a scalar multiply, doing it before or after the
+# subtraction gives the same result.
 if (variable == "solar_rad_net") {
   
   for (period_name in names(periods)) {
@@ -359,6 +391,9 @@ if (variable == "solar_rad_net") {
     rsds_r <- rsds$r[[match(common_dates, rsds$dates)]]
     rsus_r <- rsus$r[[match(common_dates, rsus$dates)]]
     
+    # Put rsus on the rsds grid before subtracting.
+    rsus_r <- align_to_template(rsus_r, rsds_r[[1]], "rsus")
+    
     swnet_r <- to_MJ(rsds_r - rsus_r)
     
     monthly <- climatological_monthly_means_all(swnet_r, common_dates, p$years)
@@ -372,9 +407,10 @@ if (variable == "solar_rad_net") {
 }
 
 # ---- SOLAR RADIATION NET, TOTAL (net SW = rsds - rsus, W m-2 -> MJ m-2 day-1) ----
-# Same rsds/rsus loading and date-alignment handling as solar_rad_net above
-# (rsds via the standard continuous loader, rsus via the monthly-chunk
-# loader with its known May-1997 gap auto-skipped). The MJ conversion is
+# Same rsds/rsus loading, date-alignment and grid-alignment handling as
+# solar_rad_net above (rsds via the standard continuous loader, rsus via the
+# monthly-chunk loader with its known May-1997 gap auto-skipped, then rsus
+# resampled onto the rsds grid before subtracting). The MJ conversion is
 # then applied as the `transform` inside climatological_monthly_sums_all(),
 # same method Script 2 uses for total_precip / total_solar_rad_net.
 if (variable == "total_solar_rad_net") {
@@ -394,6 +430,9 @@ if (variable == "total_solar_rad_net") {
     
     rsds_r <- rsds$r[[match(common_dates, rsds$dates)]]
     rsus_r <- rsus$r[[match(common_dates, rsus$dates)]]
+    
+    # Put rsus on the rsds grid before subtracting.
+    rsus_r <- align_to_template(rsus_r, rsds_r[[1]], "rsus")
     
     swnet_r <- rsds_r - rsus_r
     
